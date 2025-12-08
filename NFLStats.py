@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 import random
 import seaborn as sns
-import tensorflow import keras
+from tensorflow import keras
 from keras import layers
 
 
@@ -14,4 +14,3 @@ Defense = pd.read_csv("Defense.csv")
 SOS = pd.read_csv("SOS.csv")
 Turnovers = pd.read_csv("Turnovers.csv")
 
-gfhgfguyudf
