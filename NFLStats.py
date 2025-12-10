@@ -59,7 +59,15 @@ team_mapping = {
     'Browns': 'Cleveland Browns'
 }
 
+# Map team names and strip whitespace from column names
 Record['Team'] = Record['Team'].map(team_mapping)
+Record.columns = Record.columns.str.strip()
+
+# Strip whitespace from all column names in all dataframes
+Offense.columns = Offense.columns.str.strip()
+Defense.columns = Defense.columns.str.strip()
+SOS.columns = SOS.columns.str.strip()
+Turnovers.columns = Turnovers.columns.str.strip()
 
 df = Offense.merge(Defense, on="Team", suffixes=('_off', '_def'))
 df = df.merge(SOS, on="Team")
@@ -67,10 +75,10 @@ df = df.merge(Turnovers, on="Team")
 df = df.merge(Record, on="Team")
 
 # Create target: 1 if Wins > Losses (winning record), 0 otherwise
-df['target'] = (df[' Wins'] > df[' Losses']).astype(int)
+df['target'] = (df['Wins'] > df['Losses']).astype(int)
 
 # Features: drop Team, Wins, Losses, OCR, and target (target is the label, not a feature)
-x = df.drop(columns=["Team", " Wins", " Losses", " OCR", "target"])
+x = df.drop(columns=["Team", "Wins", "Losses", "OCR", "target"])
 y = df['target']
 
 # Debug: check for non-numeric columns
@@ -78,6 +86,15 @@ print("Data types:")
 print(x.dtypes)
 print("\nDataframe info:")
 print(x.info())
+
+# Check for NaN values
+if df.isna().any().any():
+    print("\n⚠️  WARNING: NaN values found in dataframe!")
+    print(df.isna().sum())
+    print("\nTeams with NaN values:")
+    print(df[df.isna().any(axis=1)][['Team', 'Wins', 'Losses']])
+else:
+    print("\n✓ No NaN values found. Data looks good!")
 
 x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.25, random_state=42)
 scaler = StandardScaler()
@@ -125,6 +142,12 @@ try:
     SOSTest['Team'] = SOSTest['Team'].str.strip()
     TurnoversTest['Team'] = TurnoversTest['Team'].str.strip()
     
+    # Strip whitespace from test data column names
+    OffenseTest.columns = OffenseTest.columns.str.strip()
+    DefenseTest.columns = DefenseTest.columns.str.strip()
+    SOSTest.columns = SOSTest.columns.str.strip()
+    TurnoversTest.columns = TurnoversTest.columns.str.strip()
+    
     # Map team names in test data
     OffenseTest['Team'] = OffenseTest['Team'].map(team_mapping)
     DefenseTest['Team'] = DefenseTest['Team'].map(team_mapping)
@@ -137,7 +160,7 @@ try:
     test_df = test_df.merge(TurnoversTest, on="Team")
     
     # Prepare features for prediction (same columns as training, in same order)
-    x_predict = test_df.drop(columns=["Team", " OCR"], errors='ignore')
+    x_predict = test_df.drop(columns=["Team", "OCR"], errors='ignore')
     
     # Ensure test data has the same columns in the same order as training
     x_predict = x_predict[x.columns]
@@ -175,3 +198,92 @@ except FileNotFoundError as e:
     print("  - DefenseTest.csv")
     print("  - SOSTest.csv")
     print("  - TurnoversTest.csv")
+
+# ===== TWO-TEAM MATCHUP PREDICTION =====
+print("\n" + "="*60)
+print("PREDICT WINNER BETWEEN TWO TEAMS")
+print("="*60)
+
+# Get available teams from the training data
+available_teams = df['Team'].unique()
+print(f"\nAvailable teams ({len(available_teams)}):")
+for i, team in enumerate(sorted(available_teams), 1):
+    print(f"  {i}. {team}")
+
+# Get user input for two teams
+while True:
+    try:
+        team1_input = input("\nEnter first team name (or part of it): ").strip()
+        team2_input = input("Enter second team name (or part of it): ").strip()
+        
+        # Find matching teams (case-insensitive, partial match)
+        team1_matches = [t for t in available_teams if team1_input.lower() in t.lower()]
+        team2_matches = [t for t in available_teams if team2_input.lower() in t.lower()]
+        
+        if not team1_matches:
+            print(f"No team found matching '{team1_input}'. Please try again.")
+            continue
+        if not team2_matches:
+            print(f"No team found matching '{team2_input}'. Please try again.")
+            continue
+        
+        if len(team1_matches) > 1:
+            print(f"Multiple matches for '{team1_input}': {', '.join(team1_matches)}")
+            continue
+        if len(team2_matches) > 1:
+            print(f"Multiple matches for '{team2_input}': {', '.join(team2_matches)}")
+            continue
+        
+        team1 = team1_matches[0]
+        team2 = team2_matches[0]
+        
+        if team1 == team2:
+            print("Please enter two different teams.")
+            continue
+        
+        break
+    
+    except KeyboardInterrupt:
+        print("\nExiting...")
+        exit()
+
+# Get team stats from training data
+team1_stats = df[df['Team'] == team1].drop(columns=["Team", "Wins", "Losses", "OCR", "target"]).values[0]
+team2_stats = df[df['Team'] == team2].drop(columns=["Team", "Wins", "Losses", "OCR", "target"]).values[0]
+
+# Ensure stats are in the same order as training features
+team1_stats = pd.DataFrame([team1_stats], columns=x.columns)
+team2_stats = pd.DataFrame([team2_stats], columns=x.columns)
+
+# Scale the stats
+team1_scaled = scaler.transform(team1_stats)
+team2_scaled = scaler.transform(team2_stats)
+
+# Make predictions
+log_reg_team1 = log_reg.predict(team1_scaled)[0]
+log_reg_team2 = log_reg.predict(team2_scaled)[0]
+nn_team1 = (model.predict(team1_scaled, verbose=0) > 0.5).astype("int32")[0][0]
+nn_team2 = (model.predict(team2_scaled, verbose=0) > 0.5).astype("int32")[0][0]
+
+# Display results
+print("\n" + "="*60)
+print(f"MATCHUP: {team1} vs {team2}")
+print("="*60)
+print(f"\n{'Model':<25} {'Team 1 ({})': <30} {'Team 2 ({})': <30}")
+print(f"{'': <25} {team1: <30} {team2: <30}")
+print("-" * 85)
+print(f"{'Logistic Regression': <25} {'WIN' if log_reg_team1 == 1 else 'LOSS': <30} {'WIN' if log_reg_team2 == 1 else 'LOSS': <30}")
+print(f"{'Neural Network': <25} {'WIN' if nn_team1 == 1 else 'LOSS': <30} {'WIN' if nn_team2 == 1 else 'LOSS': <30}")
+print("-" * 85)
+
+# Determine consensus winner
+log_reg_winner = team1 if log_reg_team1 > log_reg_team2 else team2
+nn_winner = team1 if nn_team1 > nn_team2 else team2
+
+print(f"\nLogistic Regression predicts: {log_reg_winner} wins")
+print(f"Neural Network predicts: {nn_winner} wins")
+
+if log_reg_winner == nn_winner:
+    print(f"\nBoth models agree: {log_reg_winner} wins this matchup!")
+else:
+    print(f"\nModels disagree - it's a close call!")
