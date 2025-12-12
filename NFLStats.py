@@ -79,7 +79,7 @@ df['target'] = (df['Wins'] > df['Losses']).astype(int)
 
 # Features: drop Team, Wins, Losses, OCR, and target (target is the label, not a feature)
 x = df.drop(columns=["Team", "Wins", "Losses", "OCR", "target"])
-y = df['target']
+y = df['target'] # Winner target
 
 # Debug: check for non-numeric columns
 print("Data types:")
@@ -89,38 +89,38 @@ print(x.info())
 
 # Check for NaN values
 if df.isna().any().any():
-    print("\n⚠️  WARNING: NaN values found in dataframe!")
+    print("\nWARNING: NaN values found in dataframe!")
     print(df.isna().sum())
     print("\nTeams with NaN values:")
     print(df[df.isna().any(axis=1)][['Team', 'Wins', 'Losses']])
 else:
-    print("\n✓ No NaN values found. Data looks good!")
+    print("\nNo NaN values found. Data looks good!")
 
-x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.25, random_state=42)
-scaler = StandardScaler()
-x_train = scaler.fit_transform(x_train)
-x_test = scaler.transform(x_test)
-le = LabelEncoder()
-y_train = le.fit_transform(y_train)
-y_test = le.transform(y_test)
+x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.25, random_state=42) # 75% train, 25% test
+scaler = StandardScaler() # Standardize features
+x_train = scaler.fit_transform(x_train) # Fit on training data
+x_test = scaler.transform(x_test) # Transform test data
+le = LabelEncoder() # Encode target labels
+y_train = le.fit_transform(y_train) # Fit and transform training labels
+y_test = le.transform(y_test) # Transform test labels
 
 # Logistic Regression Model
-log_reg = LogisticRegression(max_iter=1000)
-log_reg.fit(x_train, y_train)
-y_pred_log_reg = log_reg.predict(x_test)
-cm_log_reg = confusion_matrix(y_test, y_pred_log_reg)
-print("Logistic Regression Confusion Matrix:")
-print(cm_log_reg)
+log_reg = LogisticRegression(max_iter=1000) # Increase max_iter
+log_reg.fit(x_train, y_train) # Train model
+y_pred_log_reg = log_reg.predict(x_test) # Predict on test data
+cm_log_reg = confusion_matrix(y_test, y_pred_log_reg) # Confusion matrix
+print("Logistic Regression Confusion Matrix:") 
+print(cm_log_reg) 
 # Neural Network Model
-model = models.Sequential()
-model.add(layers.Dense(64, activation='relu', input_shape=(x_train.shape[1],)))
-model.add(layers.Dense(32, activation='relu'))
-model.add(layers.Dense(1, activation='sigmoid'))
-model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
-early_stopping = callbacks.EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
-model.fit(x_train, y_train, epochs=100, batch_size=16, validation_split=0.15, callbacks=[early_stopping])
-y_pred_nn = (model.predict(x_test) > 0.5).astype("int32")
-cm_nn = confusion_matrix(y_test, y_pred_nn)
+model = models.Sequential() 
+model.add(layers.Dense(64, activation='relu', input_shape=(x_train.shape[1],))) # Input layer
+model.add(layers.Dense(32, activation='relu')) # Hidden layer
+model.add(layers.Dense(1, activation='sigmoid')) # Output layer
+model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy']) # Compile model
+early_stopping = callbacks.EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True) # Early stopping
+model.fit(x_train, y_train, epochs=100, batch_size=16, validation_split=0.15, callbacks=[early_stopping]) # Train model
+y_pred_nn = (model.predict(x_test) > 0.5).astype("int32") # Predict on test data
+cm_nn = confusion_matrix(y_test, y_pred_nn) # Confusion matrix
 print("Neural Network Confusion Matrix:")
 print(cm_nn)
 
@@ -179,9 +179,8 @@ try:
     print("-" * 80)
     
     for i, team in enumerate(test_df['Team']):
-        log_pred = "WIN (1)" if log_reg_predictions[i] == 1 else "LOSS (0)"
-        nn_pred = "WIN (1)" if nn_predictions[i] == 1 else "LOSS (0)"
-        print(f"{team:<25} {log_pred:<20} {nn_pred:<20}")
+        log_pred = "WIN (1)" if log_reg_predictions[i] == 1 else "LOSS (0)" #Logistic regression prediction
+        nn_pred = "WIN (1)" if nn_predictions[i] == 1 else "LOSS (0)" #Neural network prediction
     
     print("-" * 80)
     
