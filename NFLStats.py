@@ -179,8 +179,9 @@ try:
     print("-" * 80)
     
     for i, team in enumerate(test_df['Team']):
-        log_pred = "WIN (1)" if log_reg_predictions[i] == 1 else "LOSS (0)" #Logistic regression prediction
-        nn_pred = "WIN (1)" if nn_predictions[i] == 1 else "LOSS (0)" #Neural network prediction
+        log_pred = "WIN (1)" if log_reg_predictions[i] == 1 else "LOSS (0)"
+        nn_pred = "WIN (1)" if nn_predictions[i] == 1 else "LOSS (0)"
+        #print(f"{team:<25} {log_pred:<20} {nn_pred:<20}")
     
     print("-" * 80)
     
@@ -258,26 +259,26 @@ team2_stats = pd.DataFrame([team2_stats], columns=x.columns)
 team1_scaled = scaler.transform(team1_stats)
 team2_scaled = scaler.transform(team2_stats)
 
-# Make predictions
-log_reg_team1 = log_reg.predict(team1_scaled)[0]
-log_reg_team2 = log_reg.predict(team2_scaled)[0]
-nn_team1 = (model.predict(team1_scaled, verbose=0) > 0.5).astype("int32")[0][0]
-nn_team2 = (model.predict(team2_scaled, verbose=0) > 0.5).astype("int32")[0][0]
+# Make predictions with probability scores
+log_reg_team1_prob = log_reg.predict_proba(team1_scaled)[0][1]
+log_reg_team2_prob = log_reg.predict_proba(team2_scaled)[0][1]
+nn_team1_prob = model.predict(team1_scaled, verbose=0)[0][0]
+nn_team2_prob = model.predict(team2_scaled, verbose=0)[0][0]
+
+# Determine winners based on highest probability (only one winner per model)
+log_reg_winner = team1 if log_reg_team1_prob > log_reg_team2_prob else team2
+nn_winner = team1 if nn_team1_prob > nn_team2_prob else team2
 
 # Display results
 print("\n" + "="*60)
 print(f"MATCHUP: {team1} vs {team2}")
 print("="*60)
-print(f"\n{'Model':<25} {'Team 1 ({})': <30} {'Team 2 ({})': <30}")
-print(f"{'': <25} {team1: <30} {team2: <30}")
+print(f"\n{'Model':<25} {'Team 1':<30} {'Team 2':<30}")
+print(f"{'': <25} {team1:<30} {team2:<30}")
 print("-" * 85)
-print(f"{'Logistic Regression': <25} {'WIN' if log_reg_team1 == 1 else 'LOSS': <30} {'WIN' if log_reg_team2 == 1 else 'LOSS': <30}")
-print(f"{'Neural Network': <25} {'WIN' if nn_team1 == 1 else 'LOSS': <30} {'WIN' if nn_team2 == 1 else 'LOSS': <30}")
+print(f"{'Logistic Regression': <25} {log_reg_team1_prob:.4f} {'(WINNER)' if log_reg_winner == team1 else '':<23} {log_reg_team2_prob:.4f} {'(WINNER)' if log_reg_winner == team2 else '':<23}")
+print(f"{'Neural Network': <25} {nn_team1_prob:.4f} {'(WINNER)' if nn_winner == team1 else '':<23} {nn_team2_prob:.4f} {'(WINNER)' if nn_winner == team2 else '':<23}")
 print("-" * 85)
-
-# Determine consensus winner
-log_reg_winner = team1 if log_reg_team1 > log_reg_team2 else team2
-nn_winner = team1 if nn_team1 > nn_team2 else team2
 
 print(f"\nLogistic Regression predicts: {log_reg_winner} wins")
 print(f"Neural Network predicts: {nn_winner} wins")
@@ -285,4 +286,4 @@ print(f"Neural Network predicts: {nn_winner} wins")
 if log_reg_winner == nn_winner:
     print(f"\nBoth models agree: {log_reg_winner} wins this matchup!")
 else:
-    print(f"\nModels disagree - it's a close call!")
+    print(f"\nModels disagree - {log_reg_winner} vs {nn_winner}")
