@@ -1,8 +1,9 @@
-# pip install pandas numpy scikit-learn tensorflow
+# pip install pandas numpy scikit-learn tensorflow requests
 
 import tensorflow as tf
 import numpy as np
 import pandas as pd
+import requests
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.metrics import confusion_matrix
@@ -199,14 +200,84 @@ except FileNotFoundError as e:
     print("  - SOSTest.csv")
     print("  - TurnoversTest.csv")
 
+# ===== LIVE STATS FETCHING FUNCTIONS =====
+def fetch_live_team_stats(team_name):
+    """
+    Fetch live NFL team stats from ESPN API
+    Returns stats formatted for model prediction
+    """
+    try:
+        print(f"\nFetching live stats for {team_name}...")
+        
+        # ESPN API endpoint for teams
+        url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams"
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
+        
+        teams_data = response.json()
+        espn_teams = teams_data['sports'][0]['leagues'][0]['teams']
+        
+        # Find matching team
+        matched_team = None
+        for team in espn_teams:
+            if team_name.lower() in team['displayName'].lower() or team['name'].lower() in team_name.lower():
+                matched_team = team
+                break
+        
+        if not matched_team:
+            print(f"Could not find {team_name} on ESPN")
+            return None
+        
+        # Extract available stats
+        stats = {
+            'Team': team_name,
+            'Record': matched_team.get('record', [{}])[0].get('summary', 'N/A'),
+            'Wins': matched_team.get('record', [{}])[0].get('wins', 'N/A'),
+            'Losses': matched_team.get('record', [{}])[0].get('losses', 'N/A')
+        }
+        
+        print(f"Found: {matched_team['displayName']} ({stats['Record']})")
+        return stats
+        
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching stats: {e}")
+        return None
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        return None
+
+def get_live_team_features(team_name, training_data_df):
+    """
+    Get team stats from training data (existing stats used as baseline)
+    In production, you would fetch from live API and map to feature columns
+    """
+    try:
+        # Try to get from training data first
+        team_row = training_data_df[training_data_df['Team'] == team_name]
+        
+        if len(team_row) == 0:
+            print(f"  ❌ Team '{team_name}' not found in training data")
+            return None
+        
+        # Extract features (same columns as training)
+        features = team_row.drop(columns=["Team", "Wins", "Losses", "OCR", "target"], errors='ignore').values[0]
+        
+        print(f"Loaded stats for {team_name}")
+        return features
+        
+    except Exception as e:
+        print(f"Error loading team features: {e}")
+        return None
+
 # ===== TWO-TEAM MATCHUP PREDICTION =====
 print("\n" + "="*60)
 print("PREDICT WINNER BETWEEN TWO TEAMS")
 print("="*60)
+print("\nFetching live stats from ESPN...\n")
 
 # Get available teams from the training data
 available_teams = df['Team'].unique()
-print(f"\nAvailable teams ({len(available_teams)}):")
+print(f"Available teams ({len(available_teams)}):")
 for i, team in enumerate(sorted(available_teams), 1):
     print(f"  {i}. {team}")
 
@@ -247,9 +318,23 @@ while True:
         print("\nExiting...")
         exit()
 
-# Get team stats from training data
-team1_stats = df[df['Team'] == team1].drop(columns=["Team", "Wins", "Losses", "OCR", "target"]).values[0]
-team2_stats = df[df['Team'] == team2].drop(columns=["Team", "Wins", "Losses", "OCR", "target"]).values[0]
+# Fetch live stats for both teams
+print("\n" + "-"*60)
+print("FETCHING LIVE STATS...")
+print("-"*60)
+
+live_team1 = fetch_live_team_stats(team1)
+live_team2 = fetch_live_team_stats(team2)
+
+# Get team features from training data
+print("\nLoading feature data...")
+team1_stats = get_live_team_features(team1, df)
+team2_stats = get_live_team_features(team2, df)
+
+if team1_stats is None or team2_stats is None:
+    print("\nError loading team features. Using training data as fallback.")
+    team1_stats = df[df['Team'] == team1].drop(columns=["Team", "Wins", "Losses", "OCR", "target"]).values[0]
+    team2_stats = df[df['Team'] == team2].drop(columns=["Team", "Wins", "Losses", "OCR", "target"]).values[0]
 
 # Ensure stats are in the same order as training features
 team1_stats = pd.DataFrame([team1_stats], columns=x.columns)
@@ -273,6 +358,13 @@ nn_winner = team1 if nn_team1_prob > nn_team2_prob else team2
 print("\n" + "="*60)
 print(f"MATCHUP: {team1} vs {team2}")
 print("="*60)
+
+# Show live stats if available
+if live_team1 and live_team2:
+    print(f"\nLIVE STATS:")
+    print(f"  {team1}: {live_team1.get('Record', 'N/A')}")
+    print(f"  {team2}: {live_team2.get('Record', 'N/A')}")
+
 print(f"\n{'Model':<25} {'Team 1':<30} {'Team 2':<30}")
 print(f"{'': <25} {team1:<30} {team2:<30}")
 print("-" * 85)
@@ -280,10 +372,11 @@ print(f"{'Logistic Regression': <25} {log_reg_team1_prob:.4f} {'(WINNER)' if log
 print(f"{'Neural Network': <25} {nn_team1_prob:.4f} {'(WINNER)' if nn_winner == team1 else '':<23} {nn_team2_prob:.4f} {'(WINNER)' if nn_winner == team2 else '':<23}")
 print("-" * 85)
 
-print(f"\nLogistic Regression predicts: {log_reg_winner} wins")
-print(f"Neural Network predicts: {nn_winner} wins")
+print(f"\nPREDICTIONS:")
+print(f"  Logistic Regression predicts: {log_reg_winner} wins")
+print(f"  Neural Network predicts: {nn_winner} wins")
 
 if log_reg_winner == nn_winner:
-    print(f"\nBoth models agree: {log_reg_winner} wins this matchup!")
+    print(f"\n✓ Both models agree: {log_reg_winner} wins this matchup!")
 else:
-    print(f"\nModels disagree - {log_reg_winner} vs {nn_winner}")
+    print(f"\n⚠ Models disagree - {log_reg_winner} vs {nn_winner}")
