@@ -136,14 +136,17 @@ print(cm_log_reg)
 if XGBClassifier is not None:
     xgb_clf = XGBClassifier(use_label_encoder=False, eval_metric='logloss', n_estimators=200, max_depth=4, random_state=42, verbosity=0)
     try:
-        xgb_clf.fit(x_train, y_train, early_stopping_rounds=10, eval_set=[(x_test, y_test)], verbose=False)
-    except TypeError:
-        # some older xgboost versions use verbose=0 differently
-        xgb_clf.fit(x_train, y_train, early_stopping_rounds=10, eval_set=[(x_test, y_test)])
-    y_pred_xgb = xgb_clf.predict(x_test)
-    cm_xgb = confusion_matrix(y_test, y_pred_xgb)
-    print("XGBoost Confusion Matrix:")
-    print(cm_xgb)
+        # train without early stopping for compatibility
+        xgb_clf.fit(x_train, y_train)
+    except Exception as e:
+        print(f"XGBoost training error: {e}")
+        xgb_clf = None
+    
+    if xgb_clf is not None:
+        y_pred_xgb = xgb_clf.predict(x_test)
+        cm_xgb = confusion_matrix(y_test, y_pred_xgb)
+        print("XGBoost Confusion Matrix:")
+        print(cm_xgb)
 else:
     print("XGBoost not installed; skipping XGBoost model.")
 # Neural Network Model
