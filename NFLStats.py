@@ -4,12 +4,34 @@
 """
 NFL win-prediction script
 
-This script trains three models (Logistic Regression, Neural Network, XGBoost)
-on aggregated team statistics (offense, defense, SOS, turnovers) plus
-domain features (home field advantage, weather difficulty, upset factor).
+This script demonstrates a compact, end-to-end pipeline for predicting
+team-level winning records (binary target) from aggregated season-level
+statistics. It shows common data-preparation steps, several modelling
+approaches (linear model, tree ensembles, and a small neural network),
+and how to apply those models to unseen test data and to head-to-head
+matchup predictions.
 
-It can validate predictions against a held-out test CSV and provide an
-interactive (or non-interactive) two-team matchup prediction.
+Key points and components:
+- Input CSVs: per-team aggregated statistics such as offense/defense
+    yards and points per game, strength-of-schedule (SOS), turnovers,
+    home-field advantage rank, weather difficulty, and an Upset_Factor
+    (domain-derived volatility metric).
+- Models trained: LogisticRegression (interpretable baseline),
+    DecisionTree and RandomForest (tree-based baselines), a Keras
+    feed-forward Neural Network, and XGBoost (if installed).
+- Evaluation: confusion matrices and accuracy on held-out test split,
+    plus optional validation against `WinsLossesTest.csv` when present.
+- Matchup prediction: scale and predict two teams' feature vectors,
+    aggregate model votes/probabilities into a simple ensemble, and
+    compute an "adjusted upset" probability that mixes model confidence
+    with the dataset Upset_Factor and historical win ratio.
+
+Usage notes:
+- Run non-interactively with `--no-interactive` or specify two teams
+    with `--team1` and `--team2` for immediate matchup output.
+- The script is intentionally conservative with memory use when
+    combining test auxiliary tables: one-to-one mappings are applied
+    (Team -> Rank / Weather / Upset) instead of large merges.
 """
 import xgboost as xgb
 import tensorflow as tf
@@ -20,6 +42,8 @@ from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.metrics import confusion_matrix
 from sklearn.linear_model import LogisticRegression
 from keras import layers, models, callbacks
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
 import argparse
 import sys
 try:
@@ -156,26 +180,37 @@ if df.isna().any().any():
 else:
     print("\nNo NaN values found. Data looks good!")
 
-# Split dataset into train/test and standardize features. We fit the
-# StandardScaler on the training split and reuse it to transform test
-# and later prediction inputs so there is no data leakage.
-x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.25, random_state=42) # 75% train, 25% test
-scaler = StandardScaler() # Standardize features
-x_train = scaler.fit_transform(x_train) # Fit on training data
-x_test = scaler.transform(x_test) # Transform test data
-le = LabelEncoder() # Encode target labels
-y_train = le.fit_transform(y_train) # Fit and transform training labels
-y_test = le.transform(y_test) # Transform test labels
+# Split dataset into train/test and standardize features.
+#
+# Notes:
+# - We use a simple randomized split here (75% train, 25% test). For a
+#   small dataset you may want cross-validation or stratified sampling to
+#   ensure class balance; this pipeline keeps things simple for clarity.
+# - Fit the `StandardScaler` on the training set only to avoid
+#   information leakage from the test set into the scaling parameters.
+# - `LabelEncoder` converts the boolean winning-record target into
+#   {0,1} numeric labels used by scikit-learn models.
+x_train, x_test, y_train, y_test = train_test_split(
+    x, y, test_size=0.25, random_state=42
+)  # 75% train, 25% test
+scaler = StandardScaler()  # Standardize features (zero mean, unit variance)
+x_train = scaler.fit_transform(x_train)  # Fit on training data only
+x_test = scaler.transform(x_test)  # Apply same transform to test data
+le = LabelEncoder()  # Encode target labels for compatibility with scikit-learn
+y_train = le.fit_transform(y_train)  # Fit and transform training labels
+y_test = le.transform(y_test)  # Transform test labels (do not refit)
 
 # --------------------------
-# Logistic Regression
-# A simple baseline linear classifier for binary win/loss prediction.
-# We use it as a baseline to compare against the NN and XGBoost models.
+# Logistic Regression (interpretable baseline)
+# - Linear model that learns coefficients for each standardized feature.
+# - Fast to train and provides a useful baseline; coefficients can be
+#   inspected to see which features move predictions in which direction.
+# - We use `predict_proba` later when constructing ensemble probabilities.
 # --------------------------
-log_reg = LogisticRegression(max_iter=1000) # Increase max_iter
-log_reg.fit(x_train, y_train) # Train model
-y_pred_log_reg = log_reg.predict(x_test) # Predict on test data
-cm_log_reg = confusion_matrix(y_test, y_pred_log_reg) # Confusion matrix
+log_reg = LogisticRegression(max_iter=1000)  # Increase max_iter for convergence
+log_reg.fit(x_train, y_train)  # Train model
+y_pred_log_reg = log_reg.predict(x_test)  # Predict on test data
+cm_log_reg = confusion_matrix(y_test, y_pred_log_reg)  # Confusion matrix
 print("Logistic Regression Confusion Matrix:")
 print(cm_log_reg)
 # --------------------------
@@ -184,9 +219,21 @@ print(cm_log_reg)
 # tabular-data performance; we catch training errors and continue if it fails.
 # --------------------------
 if XGBClassifier is not None:
-    xgb_clf = XGBClassifier(use_label_encoder=False, eval_metric='logloss', n_estimators=200, max_depth=4, random_state=42, verbosity=0)
+    # XGBoost hyperparameters chosen conservatively for small datasets.
+    # - `n_estimators` controls number of trees, `max_depth` limits tree size.
+    # - We silence verbose logging for cleaner runtime output.
+    xgb_clf = XGBClassifier(
+        use_label_encoder=False,
+        eval_metric='logloss',
+        n_estimators=200,
+        max_depth=4,
+        random_state=42,
+        verbosity=0,
+    )
     try:
-        # train without early stopping for compatibility
+        # Train; XGBoost is robust on tabular data but can be sensitive to
+        # mislabeled or heavily imbalanced targets. If it fails we continue
+        # gracefully with the remaining models.
         xgb_clf.fit(x_train, y_train)
     except Exception as e:
         print(f"XGBoost training error: {e}")
@@ -200,18 +247,59 @@ if XGBClassifier is not None:
 else:
     print("XGBoost not installed; skipping XGBoost model.")
 # --------------------------
+# Decision Tree & Random Forest
+# - Tree models add non-linear interactions and different inductive biases
+#   to the ensemble. Random Forest aggregates many trees to reduce variance.
+# - We include them to diversify the ensemble of model opinions.
+# --------------------------
+dt_clf = None
+rf_clf = None
+try:
+    dt_clf = DecisionTreeClassifier(random_state=42, max_depth=6)
+    dt_clf.fit(x_train, y_train)
+    y_pred_dt = dt_clf.predict(x_test)
+    cm_dt = confusion_matrix(y_test, y_pred_dt)
+    print("Decision Tree Confusion Matrix:")
+    print(cm_dt)
+except Exception as e:
+    print("Decision Tree training error:", e)
+    dt_clf = None
+
+try:
+    rf_clf = RandomForestClassifier(n_estimators=200, max_depth=8, random_state=42, n_jobs=-1)
+    rf_clf.fit(x_train, y_train)
+    y_pred_rf = rf_clf.predict(x_test)
+    cm_rf = confusion_matrix(y_test, y_pred_rf)
+    print("Random Forest Confusion Matrix:")
+    print(cm_rf)
+except Exception as e:
+    print("Random Forest training error:", e)
+    rf_clf = None
+# --------------------------
 # Neural Network (Keras)
-# A small fully-connected network trained on the same features. We use
-# early stopping on validation loss to prevent overfitting.
+# - A compact feed-forward network with two hidden layers. The final
+#   sigmoid output is interpreted as the probability of the positive
+#   class (winning record). We use `predict` to obtain probabilities and
+#   threshold at 0.5 for class predictions.
+# - EarlyStopping on a small validation split prevents overfitting when
+#   training for many epochs; this is important with limited data.
 # --------------------------
 model = models.Sequential()
 model.add(layers.Dense(64, activation='relu', input_shape=(x_train.shape[1],)))  # Input layer
 model.add(layers.Dense(32, activation='relu'))  # Hidden layer
-model.add(layers.Dense(1, activation='sigmoid'))  # Output layer
+model.add(layers.Dense(1, activation='sigmoid'))  # Output layer (probability)
 model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])  # Compile model
 early_stopping = callbacks.EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)  # Early stopping
-model.fit(x_train, y_train, epochs=100, batch_size=16, validation_split=0.15, callbacks=[early_stopping], verbose=0)  # Train model
-y_pred_nn = (model.predict(x_test, verbose=0) > 0.5).astype("int32")  # Predict on test data
+model.fit(
+    x_train,
+    y_train,
+    epochs=100,
+    batch_size=16,
+    validation_split=0.15,
+    callbacks=[early_stopping],
+    verbose=0,
+)  # Train model
+y_pred_nn = (model.predict(x_test, verbose=0) > 0.5).astype("int32")  # Predict on test data (binary)
 cm_nn = confusion_matrix(y_test, y_pred_nn)  # Confusion matrix
 print("Neural Network Confusion Matrix:")
 print(cm_nn)
@@ -223,8 +311,21 @@ print("="*60)
 
 # --------------------------
 # Load and prepare unseen/test games for prediction
-# The script expects per-team test CSVs mirroring the training features.
-# We standardize, map team names, then merge the same way as the training pipeline.
+#
+# The pipeline expects a collection of per-team CSVs that mirror the
+# columns used during training (offense/defense/SOS/Turnovers plus the
+# optional auxiliary tables). Test CSVs typically represent the upcoming
+# week's team-level stats or an alternate season snapshot. Important
+# considerations:
+# - Column headers may vary slightly between files (extra whitespace,
+#   year suffixes, or abbreviated team names). We defensively strip
+#   whitespace and map common short names to canonical full names.
+# - When joining auxiliary tables (home-field rank, weather, upset
+#   factor), we prefer dictionary-based one-to-one mapping (Team -> val)
+#   instead of large DataFrame merges to avoid accidental Cartesian
+#   products and excessive memory use.
+# - If ground-truth `WinsLossesTest.csv` is present we validate
+#   predictions against actual outcomes and report mismatches.
 # --------------------------
 
 # Load test data (you need to create these CSV files with game stats)
@@ -324,6 +425,19 @@ try:
     else:
         xgb_predictions = None
 
+    # Decision Tree and Random Forest predictions (if available)
+    if 'dt_clf' in globals() and dt_clf is not None:
+        dt_predictions = dt_clf.predict(x_predict_scaled)
+        test_df['pred_dt'] = dt_predictions
+    else:
+        dt_predictions = None
+
+    if 'rf_clf' in globals() and rf_clf is not None:
+        rf_predictions = rf_clf.predict(x_predict_scaled)
+        test_df['pred_rf'] = rf_predictions
+    else:
+        rf_predictions = None
+
     # attach predictions to dataframe for easy validation and downstream display
     test_df['pred_log'] = log_reg_predictions
     test_df['pred_nn'] = nn_predictions
@@ -352,24 +466,47 @@ try:
             cm_xgb_test = confusion_matrix(test_df['actual'], test_df['pred_xgb'])
 
         # Display results with validation
-        header = f"{'Team':<30} {'Actual':<8} {'LogReg':<8} {'NN':<8}"
-        if XGBClassifier is not None:
-            header = f"{'Team':<30} {'Actual':<8} {'LogReg':<8} {'NN':<8} {'XGBoost':<8} {'Upset %':<10}"
+        # Build header dynamically depending on which model prediction columns exist
+        cols_display = ["Team", "Actual", "LogReg", "NN"]
+        if 'pred_xgb' in test_df.columns:
+            cols_display.append('XGBoost')
+        if 'pred_dt' in test_df.columns:
+            cols_display.append('DT')
+        if 'pred_rf' in test_df.columns:
+            cols_display.append('RF')
+        cols_display.append('Upset %')
+
+        # Create a formatted header string
+        header = f"{cols_display[0]:<30} {cols_display[1]:<8} {cols_display[2]:<8} {cols_display[3]:<8}"
+        idx = 4
+        while idx < len(cols_display) - 1:
+            header += f" {cols_display[idx]:<8}"
+            idx += 1
+        header += f" {cols_display[-1]:<10}"
+
+        width = 100 + 8 * (len(cols_display) - 5) if len(cols_display) > 5 else 100
         print("\nGAME PREDICTIONS FOR TEST DATA (with real outcomes):")
-        print("-" * (100 if XGBClassifier is None else 140))
+        print("-" * width)
         print(header)
-        print("-" * (100 if XGBClassifier is None else 140))
+        print("-" * width)
         for i, row in test_df.reset_index().iterrows():
             team = row['Team']
             actual = 'WIN' if row['actual'] == 1 else 'LOSS'
             lg = 'WIN' if row['pred_log'] == 1 else 'LOSS'
             nn = 'WIN' if row['pred_nn'] == 1 else 'LOSS'
-            upset_pct = f"{row['Upset_Factor']*100:.1f}%" if 'Upset_Factor' in row else "N/A"
-            if XGBClassifier is not None:
+            upset_pct = f"{row['Upset_Factor']*100:.1f}%" if ('Upset_Factor' in row and pd.notna(row['Upset_Factor'])) else "N/A"
+            out = f"{team:<30} {actual:<8} {lg:<8} {nn:<8}"
+            if 'pred_xgb' in row.index:
                 xgbp = 'WIN' if row['pred_xgb'] == 1 else 'LOSS'
-                print(f"{team:<30} {actual:<8} {lg:<8} {nn:<8} {xgbp:<8} {upset_pct:<10}")
-            else:
-                print(f"{team:<30} {actual:<8} {lg:<8} {nn:<8} {upset_pct:<10}")
+                out += f" {xgbp:<8}"
+            if 'pred_dt' in row.index:
+                dtp = 'WIN' if row['pred_dt'] == 1 else 'LOSS'
+                out += f" {dtp:<8}"
+            if 'pred_rf' in row.index:
+                rfp = 'WIN' if row['pred_rf'] == 1 else 'LOSS'
+                out += f" {rfp:<8}"
+            out += f" {upset_pct:<10}"
+            print(out)
         print("-" * (100 if XGBClassifier is None else 140))
         print(f"Logistic Regression accuracy on test games: {log_acc:.4f}")
         print(f"Neural Network accuracy on test games:      {nn_acc:.4f}")
@@ -381,7 +518,13 @@ try:
             print("\nXGBoost confusion matrix:\n", cm_xgb_test)
 
         # Print mismatches: find rows where ANY model prediction differs from actual
-        cols_to_check = ['pred_log','pred_nn'] + (['pred_xgb'] if XGBClassifier is not None else [])
+        cols_to_check = ['pred_log','pred_nn']
+        if 'pred_xgb' in test_df.columns:
+            cols_to_check.append('pred_xgb')
+        if 'pred_dt' in test_df.columns:
+            cols_to_check.append('pred_dt')
+        if 'pred_rf' in test_df.columns:
+            cols_to_check.append('pred_rf')
         # Compare each prediction column to the 'actual' Series row-wise
         mismatch_mask = test_df[cols_to_check].ne(test_df['actual'], axis=0).any(axis=1)
         mismatches = test_df.loc[mismatch_mask, ['Team','Wins','Losses','actual'] + cols_to_check]
@@ -393,6 +536,10 @@ try:
                 parts.append(f"NN={'WIN' if r['pred_nn']==1 else 'LOSS'}")
                 if XGBClassifier is not None:
                     parts.append(f"XGB={'WIN' if r['pred_xgb']==1 else 'LOSS'}")
+                if 'pred_dt' in r.index:
+                    parts.append(f"DT={'WIN' if r['pred_dt']==1 else 'LOSS'}")
+                if 'pred_rf' in r.index:
+                    parts.append(f"RF={'WIN' if r['pred_rf']==1 else 'LOSS'}")
                 print(' - ' + ', '.join(parts))
     except FileNotFoundError:
         # No ground-truth file; just display predictions
@@ -520,6 +667,20 @@ if XGBClassifier is not None:
 else:
     xgb_team1 = None
     xgb_team2 = None
+# Decision Tree / Random Forest predictions for the matchup (if available)
+if 'dt_clf' in globals() and dt_clf is not None:
+    dt_team1 = dt_clf.predict(team1_scaled)[0]
+    dt_team2 = dt_clf.predict(team2_scaled)[0]
+else:
+    dt_team1 = None
+    dt_team2 = None
+
+if 'rf_clf' in globals() and rf_clf is not None:
+    rf_team1 = rf_clf.predict(team1_scaled)[0]
+    rf_team2 = rf_clf.predict(team2_scaled)[0]
+else:
+    rf_team1 = None
+    rf_team2 = None
 
 # Display results
 print("\n" + "="*60)
@@ -548,10 +709,32 @@ print(f"\nLogistic Regression predicts: {log_reg_winner} wins")
 print(f"Neural Network predicts: {nn_winner} wins")
 if XGBClassifier is not None:
     print(f"XGBoost predicts: {xgb_winner} wins")
+if 'dt_clf' in globals() and dt_clf is not None:
+    print(f"Decision Tree predicts: {team1 if dt_team1>dt_team2 else team2} wins")
+if 'rf_clf' in globals() and rf_clf is not None:
+    print(f"Random Forest predicts: {team1 if rf_team1>rf_team2 else team2} wins")
 
 # Compute a simple vote-based consensus across available models.
-votes_team1 = int(log_reg_team1) + int(nn_team1) + (int(xgb_team1) if XGBClassifier is not None else 0)
-votes_team2 = int(log_reg_team2) + int(nn_team2) + (int(xgb_team2) if XGBClassifier is not None else 0)
+#
+# Each model casts one vote for the team it predicts will have a
+# winning record. This is a majority-vote scheme; ties are awarded to
+# `team1` by the current logic (>=). For a more sophisticated ensemble
+# you could weight votes by held-out accuracy or use probability
+# averaging; this implementation keeps the behavior transparent.
+votes_team1 = (
+    int(log_reg_team1)
+    + int(nn_team1)
+    + (int(xgb_team1) if XGBClassifier is not None else 0)
+    + (int(dt_team1) if dt_team1 is not None else 0)
+    + (int(rf_team1) if rf_team1 is not None else 0)
+)
+votes_team2 = (
+    int(log_reg_team2)
+    + int(nn_team2)
+    + (int(xgb_team2) if XGBClassifier is not None else 0)
+    + (int(dt_team2) if dt_team2 is not None else 0)
+    + (int(rf_team2) if rf_team2 is not None else 0)
+)
 final_winner = team1 if votes_team1 >= votes_team2 else team2
 
 if log_reg_winner == nn_winner:
@@ -566,17 +749,117 @@ else:
 # After determining the consensus winner, display the upset chance for the
 # losing team only — the chance an upset could occur against the predicted winner.
 loser = team2 if final_winner == team1 else team1
+
+# Gather upset factor for the losing team (from the training dataframe `df`)
 loser_upset_val = None
 if 'Upset_Factor' in df.columns:
     s = df.loc[df['Team'] == loser, 'Upset_Factor']
     if not s.empty and pd.notna(s.values[0]):
-        loser_upset_val = s.values[0]
+        loser_upset_val = float(s.values[0])
 
+# Build an ensemble probability for each team by averaging available model
+# predicted probabilities for the "winning" class (class 1). Fall back
+# gracefully if some models are not present.
+probs_team1 = []
+probs_team2 = []
+try:
+    probs_team1.append(float(log_reg.predict_proba(team1_scaled)[0][1]))
+    probs_team2.append(float(log_reg.predict_proba(team2_scaled)[0][1]))
+except Exception:
+    pass
+try:
+    probs_team1.append(float(model.predict(team1_scaled, verbose=0)[0][0]))
+    probs_team2.append(float(model.predict(team2_scaled, verbose=0)[0][0]))
+except Exception:
+    pass
+if XGBClassifier is not None and 'xgb_clf' in globals() and xgb_clf is not None:
+    try:
+        probs_team1.append(float(xgb_clf.predict_proba(team1_scaled)[0][1]))
+        probs_team2.append(float(xgb_clf.predict_proba(team2_scaled)[0][1]))
+    except Exception:
+        pass
+if 'dt_clf' in globals() and dt_clf is not None:
+    try:
+        probs_team1.append(float(dt_clf.predict_proba(team1_scaled)[0][1]))
+        probs_team2.append(float(dt_clf.predict_proba(team2_scaled)[0][1]))
+    except Exception:
+        pass
+if 'rf_clf' in globals() and rf_clf is not None:
+    try:
+        probs_team1.append(float(rf_clf.predict_proba(team1_scaled)[0][1]))
+        probs_team2.append(float(rf_clf.predict_proba(team2_scaled)[0][1]))
+    except Exception:
+        pass
+
+ensemble_p1 = float(sum(probs_team1) / len(probs_team1)) if len(probs_team1) > 0 else None
+ensemble_p2 = float(sum(probs_team2) / len(probs_team2)) if len(probs_team2) > 0 else None
+
+# Determine underdog (the team with the lower ensemble probability). If
+# ensemble probabilities are unavailable, we'll fall back to Upset_Factor.
+underdog = None
+underdog_prob = None
+favorite_prob = None
+if ensemble_p1 is not None and ensemble_p2 is not None:
+    if ensemble_p1 < ensemble_p2:
+        underdog = team1
+        underdog_prob = ensemble_p1
+        favorite_prob = ensemble_p2
+    else:
+        underdog = team2
+        underdog_prob = ensemble_p2
+        favorite_prob = ensemble_p1
+
+# Get the losing team's win ratio from training records (Wins / (Wins+Losses))
+win_ratio = None
+wr = df.loc[df['Team'] == loser, ['Wins', 'Losses']]
+if not wr.empty:
+    try:
+        w = float(wr.iloc[0]['Wins'])
+        l = float(wr.iloc[0]['Losses'])
+        if (w + l) > 0:
+            win_ratio = w / (w + l)
+    except Exception:
+        win_ratio = None
+
+# Compute an adjusted upset probability combining multiple signals:
+# - ensemble underdog probability (how the models view the underdog)
+# - Upset_Factor (domain volatility; higher means upsets more likely)
+# - inverse win ratio (teams with lower win ratios are more likely to be upset)
+# - strength gap (difference between favorite and underdog probabilities)
+# Weights chosen conservatively; clamp final value to [0,1].
+adjusted_upset = None
 if loser_upset_val is not None:
-    # left column label, then show winner blank and loser upset percentage aligned
+    if underdog_prob is not None and favorite_prob is not None:
+        strength_gap = max(0.0, min(1.0, abs(favorite_prob - underdog_prob)))
+        alpha = 0.6  # weight for Upset_Factor
+        beta = 0.3   # weight for inverse win ratio
+        gamma = 0.1  # weight for closeness (1 - strength_gap)
+        inv_win = (1.0 - win_ratio) if win_ratio is not None else 0.5
+        modifier = (alpha * loser_upset_val) + (beta * inv_win) + (gamma * (1.0 - strength_gap))
+        # scale base underdog probability by the combined modifier
+        adjusted_upset = underdog_prob * modifier
+    else:
+        # If ensemble probs aren't available, make a conservative estimate
+        # based mostly on the Upset_Factor and win ratio.
+        inv_win = (1.0 - win_ratio) if win_ratio is not None else 0.5
+        adjusted_upset = 0.35 * loser_upset_val + 0.15 * inv_win
+
+if adjusted_upset is not None:
+    # Clamp to [0,1]
+    adjusted_upset = max(0.0, min(1.0, float(adjusted_upset)))
+
+    # Print header label using the requested wording
+    label = 'Chances of the Losing Team to Upset the Winning Team:'
     if final_winner == team1:
         # team1 wins; show upset % under team2 column
-        print(f"{'Chances of Upset:': <25} {'':<30} {loser_upset_val*100:.1f}%")
+        print(f"{label: <25} {'':<30} {adjusted_upset*100:.1f}%")
     else:
-        print(f"{'Chances of Upset:': <25} {loser_upset_val*100:.1f}%")
+        print(f"{label: <25} {adjusted_upset*100:.1f}%")
+    # Also provide supporting numbers when available for transparency
+    if ensemble_p1 is not None and ensemble_p2 is not None:
+        print(f"{'': <25} Ensemble probs -> {team1}: {ensemble_p1*100:.1f}%, {team2}: {ensemble_p2*100:.1f}%")
+    if loser_upset_val is not None:
+        print(f"{'': <25} Upset_Factor (dataset): {loser_upset_val:.2f}")
+    if win_ratio is not None:
+        print(f"{'': <25} Losing team win ratio: {win_ratio*100:.1f}%")
     print("-" * 85)
