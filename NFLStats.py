@@ -1,5 +1,16 @@
 # pip install pandas numpy scikit-learn tensorflow
 # pip install xgboost
+
+"""
+NFL win-prediction script
+
+This script trains three models (Logistic Regression, Neural Network, XGBoost)
+on aggregated team statistics (offense, defense, SOS, turnovers) plus
+domain features (home field advantage, weather difficulty, upset factor).
+
+It can validate predictions against a held-out test CSV and provide an
+interactive (or non-interactive) two-team matchup prediction.
+"""
 import xgboost as xgb
 import tensorflow as tf
 import numpy as np
@@ -9,12 +20,29 @@ from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.metrics import confusion_matrix
 from sklearn.linear_model import LogisticRegression
 from keras import layers, models, callbacks
+import argparse
+import sys
 try:
     from xgboost import XGBClassifier
 except Exception:
     XGBClassifier = None
 
+# Attempt to import XGBoost classifier; if unavailable we fall back
+# to training only Logistic Regression and the Neural Network.
 
+# Command-line arguments
+parser = argparse.ArgumentParser(description='NFL win-prediction script')
+parser.add_argument('--no-interactive', action='store_true', help='Skip the two-team interactive matchup prompt')
+parser.add_argument('--team1', type=str, help='First team name for non-interactive matchup')
+parser.add_argument('--team2', type=str, help='Second team name for non-interactive matchup')
+args = parser.parse_args()
+
+
+# ------------------------------
+# Load dataset CSVs
+# Each CSV contains per-team aggregated statistics used as features.
+# Ensure these files exist in the working directory.
+# ------------------------------
 Offense = pd.read_csv("Offense.csv")
 Defense = pd.read_csv("Defense.csv")
 SOS = pd.read_csv("SOS.csv")
@@ -24,7 +52,8 @@ HomeFieldAdv = pd.read_csv("HomeFieldAdv.csv")
 WeatherEffects = pd.read_csv("WeatherEffects.csv")
 UpsetFactor = pd.read_csv("UpsetFactor.csv")
 
-# Standardize team names by stripping whitespace
+# Normalize team name strings
+# We strip whitespace to avoid merge mismatches when joining on the 'Team' column.
 Offense['Team'] = Offense['Team'].str.strip()
 Defense['Team'] = Defense['Team'].str.strip()
 SOS['Team'] = SOS['Team'].str.strip()
@@ -34,7 +63,9 @@ HomeFieldAdv['Team'] = HomeFieldAdv['Team'].str.strip()
 WeatherEffects['Team'] = WeatherEffects['Team'].str.strip()
 UpsetFactor['Team'] = UpsetFactor['Team'].str.strip()
 
-# Map short names in Record to full names in other files
+# Map common short team names (appearing in some CSVs) to the canonical
+# full team names used across the other CSVs. This ensures consistent keys
+# for merges (e.g., 'Eagles' -> 'Philadelphia Eagles').
 team_mapping = {
     'Eagles': 'Philadelphia Eagles',
     'Cowboys': 'Dallas Cowboys',
@@ -70,45 +101,53 @@ team_mapping = {
     'Browns': 'Cleveland Browns'
 }
 
-# Map team names and strip whitespace from column names
+# Apply the mapping to the Record dataframe, and strip any extra
+# whitespace from column headers to avoid accidental mismatches.
 Record['Team'] = Record['Team'].map(team_mapping)
 Record.columns = Record.columns.str.strip()
 
-# Strip whitespace from all column names in all dataframes
+# Strip whitespace from all column names in the team CSVs as well
 Offense.columns = Offense.columns.str.strip()
 Defense.columns = Defense.columns.str.strip()
 SOS.columns = SOS.columns.str.strip()
 Turnovers.columns = Turnovers.columns.str.strip()
 
+# Build a single dataframe `df` with all team-level features by merging
+# offense, defense, SOS, turnovers, and the records. We keep left joins
+# for auxiliary datasets so missing values don't drop teams unintentionally.
 df = Offense.merge(Defense, on="Team", suffixes=('_off', '_def'))
 df = df.merge(SOS, on="Team")
 df = df.merge(Turnovers, on="Team")
 df = df.merge(Record, on="Team")
 
-# Merge home field advantage (take Rank as feature)
+# Merge home field advantage (take Rank as feature) and rename column
 df = df.merge(HomeFieldAdv[['Team', 'Rank']], on='Team', how='left')
 df.rename(columns={'Rank': 'HomeFieldAdv_Rank'}, inplace=True)
 
-# Merge weather effects
+# Merge weather effects (difficulty rating)
 df = df.merge(WeatherEffects[['Team', 'Weather_Difficulty_Rating']], on='Team', how='left')
 
-# Merge upset factor
+# Merge upset factor (volatility / upset likelihood)
 df = df.merge(UpsetFactor[['Team', 'Upset_Factor']], on='Team', how='left')
 
-# Create target: 1 if Wins > Losses (winning record), 0 otherwise
+# Create target column for supervised learning: 1 if team had a winning
+# record (Wins > Losses), otherwise 0. You can replace this with game-
+# level targets later if desired.
 df['target'] = (df['Wins'] > df['Losses']).astype(int)
 
-# Features: drop Team, Wins, Losses, OCR, target, and non-numeric columns
+# Prepare feature matrix `x` and label vector `y`.
+# We drop identifying/non-numeric columns that shouldn't be used as features.
 x = df.drop(columns=["Team", "Wins", "Losses", "OCR", "target", "Stadium"], errors='ignore')
-y = df['target'] # Winner target
+y = df['target']  # target label (1 = winning record)
 
-# Debug: check for non-numeric columns
+# Debug / sanity checks: print dtypes and check missing values so we can
+# catch problems early during development.
 print("Data types:")
 print(x.dtypes)
 print("\nDataframe info:")
 print(x.info())
 
-# Check for NaN values
+# Check for NaN values in the merged dataframe and report them.
 if df.isna().any().any():
     print("\nWARNING: NaN values found in dataframe!")
     print(df.isna().sum())
@@ -117,6 +156,9 @@ if df.isna().any().any():
 else:
     print("\nNo NaN values found. Data looks good!")
 
+# Split dataset into train/test and standardize features. We fit the
+# StandardScaler on the training split and reuse it to transform test
+# and later prediction inputs so there is no data leakage.
 x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.25, random_state=42) # 75% train, 25% test
 scaler = StandardScaler() # Standardize features
 x_train = scaler.fit_transform(x_train) # Fit on training data
@@ -125,14 +167,22 @@ le = LabelEncoder() # Encode target labels
 y_train = le.fit_transform(y_train) # Fit and transform training labels
 y_test = le.transform(y_test) # Transform test labels
 
-# Logistic Regression Model
+# --------------------------
+# Logistic Regression
+# A simple baseline linear classifier for binary win/loss prediction.
+# We use it as a baseline to compare against the NN and XGBoost models.
+# --------------------------
 log_reg = LogisticRegression(max_iter=1000) # Increase max_iter
 log_reg.fit(x_train, y_train) # Train model
 y_pred_log_reg = log_reg.predict(x_test) # Predict on test data
 cm_log_reg = confusion_matrix(y_test, y_pred_log_reg) # Confusion matrix
-print("Logistic Regression Confusion Matrix:") 
-print(cm_log_reg) 
-# XGBoost (if available)
+print("Logistic Regression Confusion Matrix:")
+print(cm_log_reg)
+# --------------------------
+# XGBoost (gradient-boosted trees)
+# We train XGBoost if the package is available. It often provides strong
+# tabular-data performance; we catch training errors and continue if it fails.
+# --------------------------
 if XGBClassifier is not None:
     xgb_clf = XGBClassifier(use_label_encoder=False, eval_metric='logloss', n_estimators=200, max_depth=4, random_state=42, verbosity=0)
     try:
@@ -141,7 +191,7 @@ if XGBClassifier is not None:
     except Exception as e:
         print(f"XGBoost training error: {e}")
         xgb_clf = None
-    
+
     if xgb_clf is not None:
         y_pred_xgb = xgb_clf.predict(x_test)
         cm_xgb = confusion_matrix(y_test, y_pred_xgb)
@@ -149,16 +199,20 @@ if XGBClassifier is not None:
         print(cm_xgb)
 else:
     print("XGBoost not installed; skipping XGBoost model.")
-# Neural Network Model
-model = models.Sequential() 
-model.add(layers.Dense(64, activation='relu', input_shape=(x_train.shape[1],))) # Input layer
-model.add(layers.Dense(32, activation='relu')) # Hidden layer
-model.add(layers.Dense(1, activation='sigmoid')) # Output layer
-model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy']) # Compile model
-early_stopping = callbacks.EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True) # Early stopping
-model.fit(x_train, y_train, epochs=100, batch_size=16, validation_split=0.15, callbacks=[early_stopping], verbose=0) # Train model
-y_pred_nn = (model.predict(x_test, verbose=0) > 0.5).astype("int32") # Predict on test data
-cm_nn = confusion_matrix(y_test, y_pred_nn) # Confusion matrix
+# --------------------------
+# Neural Network (Keras)
+# A small fully-connected network trained on the same features. We use
+# early stopping on validation loss to prevent overfitting.
+# --------------------------
+model = models.Sequential()
+model.add(layers.Dense(64, activation='relu', input_shape=(x_train.shape[1],)))  # Input layer
+model.add(layers.Dense(32, activation='relu'))  # Hidden layer
+model.add(layers.Dense(1, activation='sigmoid'))  # Output layer
+model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])  # Compile model
+early_stopping = callbacks.EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)  # Early stopping
+model.fit(x_train, y_train, epochs=100, batch_size=16, validation_split=0.15, callbacks=[early_stopping], verbose=0)  # Train model
+y_pred_nn = (model.predict(x_test, verbose=0) > 0.5).astype("int32")  # Predict on test data
+cm_nn = confusion_matrix(y_test, y_pred_nn)  # Confusion matrix
 print("Neural Network Confusion Matrix:")
 print(cm_nn)
 
@@ -166,6 +220,12 @@ print(cm_nn)
 print("\n" + "="*60)
 print("PREDICTING GAMES WITH UNSEEN DATA")
 print("="*60)
+
+# --------------------------
+# Load and prepare unseen/test games for prediction
+# The script expects per-team test CSVs mirroring the training features.
+# We standardize, map team names, then merge the same way as the training pipeline.
+# --------------------------
 
 # Load test data (you need to create these CSV files with game stats)
 try:
@@ -186,7 +246,7 @@ try:
     WeatherEffectsTest['Team'] = WeatherEffectsTest['Team'].str.strip()
     UpsetFactorTest['Team'] = UpsetFactorTest['Team'].str.strip()
     
-    # Strip whitespace from test data column names
+    # Strip whitespace from test data column names (headers may vary)
     OffenseTest.columns = OffenseTest.columns.str.strip()
     DefenseTest.columns = DefenseTest.columns.str.strip()
     SOSTest.columns = SOSTest.columns.str.strip()
@@ -204,7 +264,7 @@ try:
     WeatherEffectsTest['Team'] = WeatherEffectsTest['Team'].map(team_mapping)
     UpsetFactorTest['Team'] = UpsetFactorTest['Team'].map(team_mapping)
     
-    # Merge test data the same way as training data
+    # Merge test data the same way as training data (keep column names aligned)
     test_df = OffenseTest.merge(DefenseTest, on="Team", suffixes=('_off', '_def'))
     test_df = test_df.merge(SOSTest, on="Team")
     test_df = test_df.merge(TurnoversTest, on="Team")
@@ -236,7 +296,7 @@ try:
     else:
         xgb_predictions = None
 
-    # attach predictions to dataframe for easy validation
+    # attach predictions to dataframe for easy validation and downstream display
     test_df['pred_log'] = log_reg_predictions
     test_df['pred_nn'] = nn_predictions
 
@@ -253,7 +313,7 @@ try:
         # Compute actual label
         test_df['actual'] = (test_df['Wins'] > test_df['Losses']).astype(int)
 
-        # Compare predictions to actuals
+        # Compare predictions to actuals and report accuracy / confusion matrices
         from sklearn.metrics import accuracy_score
         log_acc = accuracy_score(test_df['actual'], test_df['pred_log'])
         nn_acc = accuracy_score(test_df['actual'], test_df['pred_nn'])
@@ -325,9 +385,40 @@ except FileNotFoundError as e:
     print("  - TurnoversTest.csv")
 
 # ===== TWO-TEAM MATCHUP PREDICTION =====
+# Interactive two-team matchup: prompts the user for two teams and prints
+# each model's prediction plus a simple consensus vote. You can skip or
+# supply teams non-interactively with the command-line flags.
 print("\n" + "="*60)
 print("PREDICT WINNER BETWEEN TWO TEAMS")
 print("="*60)
+
+# If both team args provided, use them non-interactively
+if args.team1 and args.team2:
+    team1 = args.team1
+    team2 = args.team2
+
+    # map partial names to full available team names if needed
+    available_teams = df['Team'].unique()
+    # try exact map first, otherwise do partial match
+    def resolve_team(name):
+        name = name.strip()
+        for t in available_teams:
+            if name.lower() == t.lower():
+                return t
+        matches = [t for t in available_teams if name.lower() in t.lower()]
+        return matches[0] if len(matches) == 1 else None
+
+    t1 = resolve_team(team1)
+    t2 = resolve_team(team2)
+    if t1 is None or t2 is None:
+        print("Could not resolve team names from --team1/--team2 arguments. Use --no-interactive to skip interactive prompt.")
+        sys.exit(1)
+    team1 = t1
+    team2 = t2
+
+elif args.no_interactive:
+    print("\nSkipping interactive two-team matchup (--no-interactive). Exiting.")
+    sys.exit(0)
 
 # Get available teams from the training data
 available_teams = df['Team'].unique()
