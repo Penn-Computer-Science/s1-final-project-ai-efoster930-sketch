@@ -103,7 +103,7 @@ team_mapping = {
 
 # Apply the mapping to the Record dataframe, and strip any extra
 # whitespace from column headers to avoid accidental mismatches.
-Record['Team'] = Record['Team'].map(team_mapping)
+Record['Team'] = Record['Team'].map(team_mapping).fillna(Record['Team'])
 Record.columns = Record.columns.str.strip()
 
 # Strip whitespace from all column names in the team CSVs as well
@@ -254,15 +254,32 @@ try:
     HomeFieldAdvTest.columns = HomeFieldAdvTest.columns.str.strip()
     WeatherEffectsTest.columns = WeatherEffectsTest.columns.str.strip()
     UpsetFactorTest.columns = UpsetFactorTest.columns.str.strip()
+
+    # DEBUG: print shapes and columns to diagnose merge issues
+    print("DEBUG: OffenseTest.shape:", OffenseTest.shape)
+    print("DEBUG: OffenseTest.columns:", OffenseTest.columns.tolist())
+    print("DEBUG: DefenseTest.shape:", DefenseTest.shape)
+    print("DEBUG: DefenseTest.columns:", DefenseTest.columns.tolist())
+    print("DEBUG: SOSTest.shape:", SOSTest.shape)
+    print("DEBUG: SOSTest.columns:", SOSTest.columns.tolist())
+    print("DEBUG: TurnoversTest.shape:", TurnoversTest.shape)
+    print("DEBUG: TurnoversTest.columns:", TurnoversTest.columns.tolist())
+    print("DEBUG: HomeFieldAdvTest.shape:", HomeFieldAdvTest.shape)
+    print("DEBUG: HomeFieldAdvTest.columns:", HomeFieldAdvTest.columns.tolist())
+    print("DEBUG: WeatherEffectsTest.shape:", WeatherEffectsTest.shape)
+    print("DEBUG: WeatherEffectsTest.columns:", WeatherEffectsTest.columns.tolist())
+    print("DEBUG: UpsetFactorTest.shape:", UpsetFactorTest.shape)
+    print("DEBUG: UpsetFactorTest.columns:", UpsetFactorTest.columns.tolist())
     
-    # Map team names in test data
-    OffenseTest['Team'] = OffenseTest['Team'].map(team_mapping)
-    DefenseTest['Team'] = DefenseTest['Team'].map(team_mapping)
-    SOSTest['Team'] = SOSTest['Team'].map(team_mapping)
-    TurnoversTest['Team'] = TurnoversTest['Team'].map(team_mapping)
-    HomeFieldAdvTest['Team'] = HomeFieldAdvTest['Team'].map(team_mapping)
-    WeatherEffectsTest['Team'] = WeatherEffectsTest['Team'].map(team_mapping)
-    UpsetFactorTest['Team'] = UpsetFactorTest['Team'].map(team_mapping)
+    # Map short names to canonical full names where applicable. Use
+    # fillna(...) to preserve already-correct full names.
+    OffenseTest['Team'] = OffenseTest['Team'].map(team_mapping).fillna(OffenseTest['Team'])
+    DefenseTest['Team'] = DefenseTest['Team'].map(team_mapping).fillna(DefenseTest['Team'])
+    SOSTest['Team'] = SOSTest['Team'].map(team_mapping).fillna(SOSTest['Team'])
+    TurnoversTest['Team'] = TurnoversTest['Team'].map(team_mapping).fillna(TurnoversTest['Team'])
+    HomeFieldAdvTest['Team'] = HomeFieldAdvTest['Team'].map(team_mapping).fillna(HomeFieldAdvTest['Team'])
+    WeatherEffectsTest['Team'] = WeatherEffectsTest['Team'].map(team_mapping).fillna(WeatherEffectsTest['Team'])
+    UpsetFactorTest['Team'] = UpsetFactorTest['Team'].map(team_mapping).fillna(UpsetFactorTest['Team'])
     
     # Merge test data the same way as training data (keep column names aligned)
     test_df = OffenseTest.merge(DefenseTest, on="Team", suffixes=('_off', '_def'))
@@ -271,11 +288,22 @@ try:
     # Rename Rank column in HomeFieldAdvTest before merging to avoid conflicts
     homeadv_cols = HomeFieldAdvTest[['Team', 'Rank']].copy()
     homeadv_cols.rename(columns={'Rank': 'HomeFieldAdv_Rank'}, inplace=True)
-    test_df = test_df.merge(homeadv_cols, on='Team', how='left')
-    weather_cols = WeatherEffectsTest[['Team', 'Weather_Difficulty_Rating']].copy()
-    test_df = test_df.merge(weather_cols, on='Team', how='left')
-    upset_cols = UpsetFactorTest[['Team', 'Upset_Factor']].copy()
-    test_df = test_df.merge(upset_cols, on='Team', how='left')
+    # DEBUG: inspect test_df before mapping
+    print("DEBUG BEFORE MAPPING: test_df.shape=", test_df.shape)
+    print("DEBUG BEFORE MAPPING: test_df unique teams=", test_df['Team'].nunique() if 'Team' in test_df.columns else 'NO TEAM COL')
+
+    # Use dictionary mapping instead of DataFrame.merge to avoid
+    # potential Cartesian-product or duplicate-column merges that can
+    # consume huge amounts of memory. Mapping is safer for one-to-one
+    # lookups like Team -> Rank.
+    homeadv_map = dict(HomeFieldAdvTest[['Team', 'Rank']].values)
+    test_df['HomeFieldAdv_Rank'] = test_df['Team'].map(homeadv_map)
+
+    weather_map = dict(WeatherEffectsTest[['Team', 'Weather_Difficulty_Rating']].values)
+    test_df['Weather_Difficulty_Rating'] = test_df['Team'].map(weather_map)
+
+    upset_map = dict(UpsetFactorTest[['Team', 'Upset_Factor']].values)
+    test_df['Upset_Factor'] = test_df['Team'].map(upset_map)
     
     # Prepare features for prediction (same columns as training, in same order)
     x_predict = test_df.drop(columns=["Team", "OCR", "Stadium"], errors='ignore')
@@ -306,7 +334,7 @@ try:
         WinsTest['Team'] = WinsTest['Team'].str.strip()
         WinsTest.columns = WinsTest.columns.str.strip()
         # Map short names to full names (same mapping used earlier)
-        WinsTest['Team'] = WinsTest['Team'].map(team_mapping)
+        WinsTest['Team'] = WinsTest['Team'].map(team_mapping).fillna(WinsTest['Team'])
 
         # Merge into test_df to get actual results
         test_df = test_df.merge(WinsTest, on='Team', how='left')
@@ -352,9 +380,11 @@ try:
         if XGBClassifier is not None:
             print("\nXGBoost confusion matrix:\n", cm_xgb_test)
 
-        # Print mismatches
+        # Print mismatches: find rows where ANY model prediction differs from actual
         cols_to_check = ['pred_log','pred_nn'] + (['pred_xgb'] if XGBClassifier is not None else [])
-        mismatches = test_df.loc[~(test_df['actual'] == test_df[cols_to_check]).all(axis=1), ['Team','Wins','Losses','actual'] + cols_to_check]
+        # Compare each prediction column to the 'actual' Series row-wise
+        mismatch_mask = test_df[cols_to_check].ne(test_df['actual'], axis=0).any(axis=1)
+        mismatches = test_df.loc[mismatch_mask, ['Team','Wins','Losses','actual'] + cols_to_check]
         if not mismatches.empty:
             print('\nMismatches (teams where any model disagreed with actual outcome):')
             for _, r in mismatches.iterrows():
@@ -426,42 +456,46 @@ print(f"\nAvailable teams ({len(available_teams)}):")
 for i, team in enumerate(sorted(available_teams), 1):
     print(f"  {i}. {team}")
 
-# Get user input for two teams
-while True:
-    try:
-        team1_input = input("\nEnter first team name (or part of it): ").strip()
-        team2_input = input("Enter second team name (or part of it): ").strip()
+# If team names weren't provided via CLI, prompt interactively. If they
+# were provided earlier (args.team1 && args.team2) we've already resolved
+# them and can skip this prompt.
+if not (args.team1 and args.team2):
+    # Get user input for two teams
+    while True:
+        try:
+            team1_input = input("\nEnter first team name (or part of it): ").strip()
+            team2_input = input("Enter second team name (or part of it): ").strip()
+            
+            # Find matching teams (case-insensitive, partial match)
+            team1_matches = [t for t in available_teams if team1_input.lower() in t.lower()]
+            team2_matches = [t for t in available_teams if team2_input.lower() in t.lower()]
+            
+            if not team1_matches:
+                print(f"No team found matching '{team1_input}'. Please try again.")
+                continue
+            if not team2_matches:
+                print(f"No team found matching '{team2_input}'. Please try again.")
+                continue
+            
+            if len(team1_matches) > 1:
+                print(f"Multiple matches for '{team1_input}': {', '.join(team1_matches)}")
+                continue
+            if len(team2_matches) > 1:
+                print(f"Multiple matches for '{team2_input}': {', '.join(team2_matches)}")
+                continue
+            
+            team1 = team1_matches[0]
+            team2 = team2_matches[0]
+            
+            if team1 == team2:
+                print("Please enter two different teams.")
+                continue
+            
+            break
         
-        # Find matching teams (case-insensitive, partial match)
-        team1_matches = [t for t in available_teams if team1_input.lower() in t.lower()]
-        team2_matches = [t for t in available_teams if team2_input.lower() in t.lower()]
-        
-        if not team1_matches:
-            print(f"No team found matching '{team1_input}'. Please try again.")
-            continue
-        if not team2_matches:
-            print(f"No team found matching '{team2_input}'. Please try again.")
-            continue
-        
-        if len(team1_matches) > 1:
-            print(f"Multiple matches for '{team1_input}': {', '.join(team1_matches)}")
-            continue
-        if len(team2_matches) > 1:
-            print(f"Multiple matches for '{team2_input}': {', '.join(team2_matches)}")
-            continue
-        
-        team1 = team1_matches[0]
-        team2 = team2_matches[0]
-        
-        if team1 == team2:
-            print("Please enter two different teams.")
-            continue
-        
-        break
-    
-    except KeyboardInterrupt:
-        print("\nExiting...")
-        exit()
+        except KeyboardInterrupt:
+            print("\nExiting...")
+            exit()
 
 # Get team stats from training data
 team1_stats = df[df['Team'] == team1].drop(columns=["Team", "Wins", "Losses", "OCR", "target"]).values[0]
@@ -500,13 +534,7 @@ if XGBClassifier is not None:
     print(f"{'XGBoost': <25} {'WIN' if xgb_team1 == 1 else 'LOSS': <30} {'WIN' if xgb_team2 == 1 else 'LOSS': <30}")
 print("-" * 85)
 
-# Get upset factors for display
-team1_upset = df[df['Team'] == team1]['Upset_Factor'].values[0] if 'Upset_Factor' in df.columns else None
-team2_upset = df[df['Team'] == team2]['Upset_Factor'].values[0] if 'Upset_Factor' in df.columns else None
-
-if team1_upset is not None and team2_upset is not None:
-    print(f"{'Chances of Upset:': <25} {team1_upset*100:.1f}% {'':<24} {team2_upset*100:.1f}%")
-    print("-" * 85)
+# (Upset percentages will be displayed after consensus is computed)
 
 # Determine consensus winner
 log_reg_winner = team1 if log_reg_team1 > log_reg_team2 else team2
@@ -521,14 +549,34 @@ print(f"Neural Network predicts: {nn_winner} wins")
 if XGBClassifier is not None:
     print(f"XGBoost predicts: {xgb_winner} wins")
 
+# Compute a simple vote-based consensus across available models.
+votes_team1 = int(log_reg_team1) + int(nn_team1) + (int(xgb_team1) if XGBClassifier is not None else 0)
+votes_team2 = int(log_reg_team2) + int(nn_team2) + (int(xgb_team2) if XGBClassifier is not None else 0)
+final_winner = team1 if votes_team1 >= votes_team2 else team2
+
 if log_reg_winner == nn_winner:
     print(f"\nBoth models agree: {log_reg_winner} wins this matchup!")
 else:
-    # determine 3-model consensus if XGBoost available
     if XGBClassifier is not None:
-        votes_team1 = int(log_reg_team1) + int(nn_team1) + int(xgb_team1)
-        votes_team2 = int(log_reg_team2) + int(nn_team2) + int(xgb_team2)
         consensus = team1 if votes_team1 > votes_team2 else team2
         print(f"\nModels disagree. 3-model vote: {consensus} wins ({votes_team1} vs {votes_team2})")
     else:
-        print(f"\nModels disagree - it's a close call!")
+        print(f"\nModels disagree - it's a close call! (vote: {votes_team1} vs {votes_team2})")
+
+# After determining the consensus winner, display the upset chance for the
+# losing team only — the chance an upset could occur against the predicted winner.
+loser = team2 if final_winner == team1 else team1
+loser_upset_val = None
+if 'Upset_Factor' in df.columns:
+    s = df.loc[df['Team'] == loser, 'Upset_Factor']
+    if not s.empty and pd.notna(s.values[0]):
+        loser_upset_val = s.values[0]
+
+if loser_upset_val is not None:
+    # left column label, then show winner blank and loser upset percentage aligned
+    if final_winner == team1:
+        # team1 wins; show upset % under team2 column
+        print(f"{'Chances of Upset:': <25} {'':<30} {loser_upset_val*100:.1f}%")
+    else:
+        print(f"{'Chances of Upset:': <25} {loser_upset_val*100:.1f}%")
+    print("-" * 85)
