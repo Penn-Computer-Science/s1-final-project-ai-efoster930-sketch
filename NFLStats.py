@@ -193,6 +193,7 @@ try:
     TurnoversTest.columns = TurnoversTest.columns.str.strip()
     HomeFieldAdvTest.columns = HomeFieldAdvTest.columns.str.strip()
     WeatherEffectsTest.columns = WeatherEffectsTest.columns.str.strip()
+    UpsetFactorTest.columns = UpsetFactorTest.columns.str.strip()
     
     # Map team names in test data
     OffenseTest['Team'] = OffenseTest['Team'].map(team_mapping)
@@ -207,10 +208,14 @@ try:
     test_df = OffenseTest.merge(DefenseTest, on="Team", suffixes=('_off', '_def'))
     test_df = test_df.merge(SOSTest, on="Team")
     test_df = test_df.merge(TurnoversTest, on="Team")
-    test_df = test_df.merge(HomeFieldAdvTest[['Team', 'Rank']], on='Team', how='left')
-    test_df.rename(columns={'Rank': 'HomeFieldAdv_Rank'}, inplace=True)
-    test_df = test_df.merge(WeatherEffectsTest[['Team', 'Weather_Difficulty_Rating']], on='Team', how='left')
-    test_df = test_df.merge(UpsetFactorTest[['Team', 'Upset_Factor']], on='Team', how='left')
+    # Rename Rank column in HomeFieldAdvTest before merging to avoid conflicts
+    homeadv_cols = HomeFieldAdvTest[['Team', 'Rank']].copy()
+    homeadv_cols.rename(columns={'Rank': 'HomeFieldAdv_Rank'}, inplace=True)
+    test_df = test_df.merge(homeadv_cols, on='Team', how='left')
+    weather_cols = WeatherEffectsTest[['Team', 'Weather_Difficulty_Rating']].copy()
+    test_df = test_df.merge(weather_cols, on='Team', how='left')
+    upset_cols = UpsetFactorTest[['Team', 'Upset_Factor']].copy()
+    test_df = test_df.merge(upset_cols, on='Team', how='left')
     
     # Prepare features for prediction (same columns as training, in same order)
     x_predict = test_df.drop(columns=["Team", "OCR", "Stadium"], errors='ignore')
