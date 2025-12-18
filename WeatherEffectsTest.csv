@@ -1,0 +1,33 @@
+Team,Primary_Weather_Type,Weather_Difficulty_Rating
+Buffalo Bills,Severe lake-effect blizzards and high-wind cold,10
+New England Patriots,Cold coastal winter winds,8
+New York Jets,Strong swirling Meadowlands winds,8
+New York Giants,Strong swirling Meadowlands winds,8
+Miami Dolphins,Extreme tropical heat and humidity,6
+Baltimore Ravens,Cold late-season Mid-Atlantic chill,6
+Pittsburgh Steelers,Windy Appalachian winter cold,8
+Cincinnati Bengals,Ohio River winter cold,6
+Cleveland Browns,Extreme lakeshore wind and cold surges,9
+Jacksonville Jaguars,Hot humid conditions with storm risk,5
+Tennessee Titans,Variable Southern rain and mild cold,5
+Indianapolis Colts,Indoor climate-controlled stadium,1
+Houston Texans,Indoor climate-controlled stadium,1
+Kansas City Chiefs,Cold plains air with strong front-driven winds,7
+Denver Broncos,High-altitude thin air and sharp cold fronts,9
+Las Vegas Raiders,Indoor controlled dome conditions,1
+Los Angeles Chargers,Indoor controlled SoFi conditions,1
+Dallas Cowboys,Retractable-roof controlled climate,2
+Philadelphia Eagles,Cold Northeastern late-season winds,7
+Washington Commanders,Mid-Atlantic cold with occasional gusts,6
+Chicago Bears,Severe lakefront arctic cold and wind,10
+Green Bay Packers,Frozen-tundra subzero conditions,10
+Minnesota Vikings,Indoor climate-controlled stadium,1
+Detroit Lions,Indoor climate-controlled stadium,1
+Tampa Bay Buccaneers,Hot humid subtropical heat,5
+New Orleans Saints,Full indoor dome conditions,1
+Atlanta Falcons,Climate-regulated retractable-roof environment,2
+Carolina Panthers,Southeastern variable weather with rain,5
+San Francisco 49ers,Mild coastal Mediterranean conditions,3
+Seattle Seahawks,Wind-driven coastal rain environment,7
+Los Angeles Rams,Indoor controlled SoFi environment,1
+Arizona Cardinals,Desert retractable-roof climate control,2
