@@ -1,6 +1,6 @@
 # pip install pandas numpy scikit-learn tensorflow
 # pip install xgboost
-
+# python -m pip install -r requirements.txt
 """
 NFL win-prediction script
 
@@ -46,6 +46,7 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
 import argparse
 import sys
+import os
 try:
     from xgboost import XGBClassifier
 except Exception:
@@ -170,6 +171,77 @@ df['target'] = (df['Wins'] > df['Losses']).astype(int)
 x = df.drop(columns=["Team", "Wins", "Losses", "OCR", "target", "Stadium"], errors='ignore')
 y = df['target']  # target label (1 = winning record)
 
+# Optional: if a game-level file exists, build a per-game dataset by
+# aligning each game's teams to the team-level stats. The Games CSV
+# should contain at least `HomeTeam` and `AwayTeam`, and either
+# `HomeScore`/`AwayScore` or a `Winner` column with the winning team name.
+use_game_level = False
+games_X = None
+games_y = None
+if os.path.exists('Games.csv'):
+    try:
+        games = pd.read_csv('Games.csv')
+        # normalize team name columns if present
+        for c in ['HomeTeam', 'AwayTeam', 'Winner']:
+            if c in games.columns:
+                games[c] = games[c].astype(str).str.strip()
+        # map short names to canonical
+        for c in ['HomeTeam', 'AwayTeam', 'Winner']:
+            if c in games.columns:
+                games[c] = games[c].map(team_mapping).fillna(games[c])
+
+        rows = []
+        targets = []
+        missing = 0
+        for _, g in games.iterrows():
+            if 'HomeTeam' not in g or 'AwayTeam' not in g:
+                continue
+            ht = g['HomeTeam']
+            at = g['AwayTeam']
+            # find team stat rows
+            r_ht = df.loc[df['Team'] == ht]
+            r_at = df.loc[df['Team'] == at]
+            if r_ht.empty or r_at.empty:
+                missing += 1
+                continue
+            # extract feature vectors using same columns as `x`
+            v_ht = r_ht.drop(columns=["Team", "Wins", "Losses", "OCR", "target", "Stadium"], errors='ignore').iloc[0]
+            v_at = r_at.drop(columns=["Team", "Wins", "Losses", "OCR", "target", "Stadium"], errors='ignore').iloc[0]
+            # feature: home minus away (keeps directionality for home advantage)
+            diff = (v_ht - v_at).astype(float)
+            # also include a binary home indicator (always 1 for home row)
+            diff['Is_Home'] = 1.0
+            rows.append(diff.values)
+
+            # determine target: 1 if home team won, 0 otherwise
+            winner = None
+            if 'HomeScore' in games.columns and 'AwayScore' in games.columns:
+                try:
+                    hs = float(g['HomeScore'])
+                    as_ = float(g['AwayScore'])
+                    winner = ht if hs > as_ else at
+                except Exception:
+                    winner = None
+            if winner is None and 'Winner' in games.columns:
+                winner = g['Winner']
+            if winner is None:
+                # cannot determine winner; skip
+                missing += 1
+                rows.pop()
+                continue
+            targets.append(1 if winner == ht else 0)
+
+        if len(rows) > 0:
+            import numpy as _np
+            games_X = _np.vstack(rows)
+            games_y = _np.array(targets, dtype=int)
+            use_game_level = True
+            print(f"Loaded Games.csv: {len(rows)} games (skipped {missing} with missing teams/scores)")
+        else:
+            print("Games.csv found but no usable rows after alignment; falling back to season-level training.")
+    except Exception as e:
+        print(f"Error loading Games.csv: {e}; falling back to season-level training.")
+
 # Debug / sanity checks: print dtypes and check missing values so we can
 # catch problems early during development.
 print("Data types:")
@@ -187,24 +259,29 @@ else:
     print("\nNo NaN values found. Data looks good!")
 
 # Split dataset into train/test and standardize features.
-#
-# Notes:
-# - We use a simple randomized split here (75% train, 25% test). For a
-#   small dataset you may want cross-validation or stratified sampling to
-#   ensure class balance; this pipeline keeps things simple for clarity.
-# - Fit the `StandardScaler` on the training set only to avoid
-#   information leakage from the test set into the scaling parameters.
-# - `LabelEncoder` converts the boolean winning-record target into
-#   {0,1} numeric labels used by scikit-learn models.
-x_train, x_test, y_train, y_test = train_test_split(
-    x, y, test_size=0.25, random_state=42
-)  # 75% train, 25% test
-scaler = StandardScaler()  # Standardize features (zero mean, unit variance)
-x_train = scaler.fit_transform(x_train)  # Fit on training data only
-x_test = scaler.transform(x_test)  # Apply same transform to test data
-le = LabelEncoder()  # Encode target labels for compatibility with scikit-learn
-y_train = le.fit_transform(y_train)  # Fit and transform training labels
-y_test = le.transform(y_test)  # Transform test labels (do not refit)
+# If `Games.csv` provided and aligned, train on game-level features; else use
+# season-level team features (the original behavior).
+if use_game_level and games_X is not None and games_y is not None:
+    # games_X already contains numeric numpy data; split and scale
+    x_train, x_test, y_train, y_test = train_test_split(
+        games_X, games_y, test_size=0.25, random_state=42
+    )
+    scaler = StandardScaler()
+    x_train = scaler.fit_transform(x_train)
+    x_test = scaler.transform(x_test)
+else:
+    # season-level features (team-level)
+    x_train, x_test, y_train, y_test = train_test_split(
+        x, y, test_size=0.25, random_state=42
+    )  # 75% train, 25% test
+    scaler = StandardScaler()  # Standardize features (zero mean, unit variance)
+    x_train = scaler.fit_transform(x_train)  # Fit on training data only
+    x_test = scaler.transform(x_test)  # Apply same transform to test data
+
+# Encode labels when needed
+le = LabelEncoder()
+y_train = le.fit_transform(y_train)
+y_test = le.transform(y_test)
 
 # --------------------------
 # Logistic Regression (interpretable baseline)
@@ -694,32 +771,63 @@ team2_stats = pd.DataFrame([team2_stats], columns=x.columns)
 # Scale the stats
 team1_scaled = scaler.transform(team1_stats)
 team2_scaled = scaler.transform(team2_stats)
+# Make per-model probability comparisons so each model chooses exactly one winner
+# Logistic Regression probabilities and winner
+try:
+    log_reg_p1 = float(log_reg.predict_proba(team1_scaled)[0][1])
+    log_reg_p2 = float(log_reg.predict_proba(team2_scaled)[0][1])
+except Exception:
+    # fallback to predicted class if predict_proba unavailable
+    log_reg_p1 = float(log_reg.predict(team1_scaled)[0])
+    log_reg_p2 = float(log_reg.predict(team2_scaled)[0])
+log_reg_winner = team1 if log_reg_p1 > log_reg_p2 else team2
 
-# Make predictions
-log_reg_team1 = log_reg.predict(team1_scaled)[0]
-log_reg_team2 = log_reg.predict(team2_scaled)[0]
-nn_team1 = (model.predict(team1_scaled, verbose=0) > 0.5).astype("int32")[0][0]
-nn_team2 = (model.predict(team2_scaled, verbose=0) > 0.5).astype("int32")[0][0]
-if XGBClassifier is not None:
-    xgb_team1 = xgb_clf.predict(team1_scaled)[0]
-    xgb_team2 = xgb_clf.predict(team2_scaled)[0]
+# Neural network probabilities and winner
+try:
+    nn_p1 = float(model.predict(team1_scaled, verbose=0)[0][0])
+    nn_p2 = float(model.predict(team2_scaled, verbose=0)[0][0])
+except Exception:
+    nn_p1 = None
+    nn_p2 = None
+nn_winner = team1 if (nn_p1 is not None and nn_p2 is not None and nn_p1 > nn_p2) else team2
+
+# XGBoost (if available)
+if XGBClassifier is not None and 'xgb_clf' in globals() and xgb_clf is not None:
+    try:
+        xgb_p1 = float(xgb_clf.predict_proba(team1_scaled)[0][1])
+        xgb_p2 = float(xgb_clf.predict_proba(team2_scaled)[0][1])
+    except Exception:
+        xgb_p1 = None
+        xgb_p2 = None
+    xgb_winner = team1 if (xgb_p1 is not None and xgb_p2 is not None and xgb_p1 > xgb_p2) else team2
 else:
-    xgb_team1 = None
-    xgb_team2 = None
-# Decision Tree / Random Forest predictions for the matchup (if available)
+    xgb_p1 = xgb_p2 = None
+    xgb_winner = None
+
+# Decision Tree / Random Forest probabilities and winners (if available)
 if 'dt_clf' in globals() and dt_clf is not None:
-    dt_team1 = dt_clf.predict(team1_scaled)[0]
-    dt_team2 = dt_clf.predict(team2_scaled)[0]
+    try:
+        dt_p1 = float(dt_clf.predict_proba(team1_scaled)[0][1])
+        dt_p2 = float(dt_clf.predict_proba(team2_scaled)[0][1])
+    except Exception:
+        dt_p1 = None
+        dt_p2 = None
+    dt_winner = team1 if (dt_p1 is not None and dt_p2 is not None and dt_p1 > dt_p2) else team2
 else:
-    dt_team1 = None
-    dt_team2 = None
+    dt_p1 = dt_p2 = None
+    dt_winner = None
 
 if 'rf_clf' in globals() and rf_clf is not None:
-    rf_team1 = rf_clf.predict(team1_scaled)[0]
-    rf_team2 = rf_clf.predict(team2_scaled)[0]
+    try:
+        rf_p1 = float(rf_clf.predict_proba(team1_scaled)[0][1])
+        rf_p2 = float(rf_clf.predict_proba(team2_scaled)[0][1])
+    except Exception:
+        rf_p1 = None
+        rf_p2 = None
+    rf_winner = team1 if (rf_p1 is not None and rf_p2 is not None and rf_p1 > rf_p2) else team2
 else:
-    rf_team1 = None
-    rf_team2 = None
+    rf_p1 = rf_p2 = None
+    rf_winner = None
 
 # Display results
 print("\n" + "="*60)
@@ -728,30 +836,22 @@ print("="*60)
 print(f"\n{'Model':<25} {'Team 1 ({})': <30} {'Team 2 ({})': <30}")
 print(f"{'': <25} {team1: <30} {team2: <30}")
 print("-" * 85)
-print(f"{'Logistic Regression': <25} {'WIN' if log_reg_team1 == 1 else 'LOSS': <30} {'WIN' if log_reg_team2 == 1 else 'LOSS': <30}")
-print(f"{'Neural Network': <25} {'WIN' if nn_team1 == 1 else 'LOSS': <30} {'WIN' if nn_team2 == 1 else 'LOSS': <30}")
+print(f"{'Logistic Regression': <25} {'WIN' if log_reg_winner == team1 else 'LOSS': <30} {'WIN' if log_reg_winner == team2 else 'LOSS': <30}")
+print(f"{'Neural Network': <25} {'WIN' if nn_winner == team1 else 'LOSS': <30} {'WIN' if nn_winner == team2 else 'LOSS': <30}")
 if XGBClassifier is not None:
-    print(f"{'XGBoost': <25} {'WIN' if xgb_team1 == 1 else 'LOSS': <30} {'WIN' if xgb_team2 == 1 else 'LOSS': <30}")
+    print(f"{'XGBoost': <25} {'WIN' if xgb_winner == team1 else 'LOSS': <30} {'WIN' if xgb_winner == team2 else 'LOSS': <30}")
 print("-" * 85)
 
 # (Upset percentages will be displayed after consensus is computed)
-
-# Determine consensus winner
-log_reg_winner = team1 if log_reg_team1 > log_reg_team2 else team2
-nn_winner = team1 if nn_team1 > nn_team2 else team2
-if XGBClassifier is not None:
-    xgb_winner = team1 if xgb_team1 > xgb_team2 else team2
-else:
-    xgb_winner = None
 
 print(f"\nLogistic Regression predicts: {log_reg_winner} wins")
 print(f"Neural Network predicts: {nn_winner} wins")
 if XGBClassifier is not None:
     print(f"XGBoost predicts: {xgb_winner} wins")
 if 'dt_clf' in globals() and dt_clf is not None:
-    print(f"Decision Tree predicts: {team1 if dt_team1>dt_team2 else team2} wins")
+    print(f"Decision Tree predicts: {dt_winner} wins")
 if 'rf_clf' in globals() and rf_clf is not None:
-    print(f"Random Forest predicts: {team1 if rf_team1>rf_team2 else team2} wins")
+    print(f"Random Forest predicts: {rf_winner} wins")
 
 # Compute a simple vote-based consensus across available models.
 #
@@ -760,20 +860,23 @@ if 'rf_clf' in globals() and rf_clf is not None:
 # `team1` by the current logic (>=). For a more sophisticated ensemble
 # you could weight votes by held-out accuracy or use probability
 # averaging; this implementation keeps the behavior transparent.
-votes_team1 = (
-    int(log_reg_team1)
-    + int(nn_team1)
-    + (int(xgb_team1) if XGBClassifier is not None else 0)
-    + (int(dt_team1) if dt_team1 is not None else 0)
-    + (int(rf_team1) if rf_team1 is not None else 0)
-)
-votes_team2 = (
-    int(log_reg_team2)
-    + int(nn_team2)
-    + (int(xgb_team2) if XGBClassifier is not None else 0)
-    + (int(dt_team2) if dt_team2 is not None else 0)
-    + (int(rf_team2) if rf_team2 is not None else 0)
-)
+# Use probability comparisons so each model casts exactly one vote
+votes_team1 = 0
+votes_team2 = 0
+votes_team1 += int(log_reg_p1 > log_reg_p2) if (log_reg_p1 is not None and log_reg_p2 is not None) else 0
+votes_team2 += int(log_reg_p2 > log_reg_p1) if (log_reg_p1 is not None and log_reg_p2 is not None) else 0
+votes_team1 += int(nn_p1 > nn_p2) if (nn_p1 is not None and nn_p2 is not None) else 0
+votes_team2 += int(nn_p2 > nn_p1) if (nn_p1 is not None and nn_p2 is not None) else 0
+if XGBClassifier is not None and xgb_p1 is not None and xgb_p2 is not None:
+    votes_team1 += int(xgb_p1 > xgb_p2)
+    votes_team2 += int(xgb_p2 > xgb_p1)
+if 'dt_clf' in globals() and dt_p1 is not None and dt_p2 is not None:
+    votes_team1 += int(dt_p1 > dt_p2)
+    votes_team2 += int(dt_p2 > dt_p1)
+if 'rf_clf' in globals() and rf_p1 is not None and rf_p2 is not None:
+    votes_team1 += int(rf_p1 > rf_p2)
+    votes_team2 += int(rf_p2 > rf_p1)
+
 final_winner = team1 if votes_team1 >= votes_team2 else team2
 
 if log_reg_winner == nn_winner:
@@ -794,59 +897,76 @@ loser_upset_val = None
 if 'Upset_Factor' in df.columns:
     s = df.loc[df['Team'] == loser, 'Upset_Factor']
     if not s.empty and pd.notna(s.values[0]):
-        loser_upset_val = float(s.values[0])
+        # Normalize Upset_Factor: if it's >1 assume it's a percentage (e.g. 20 -> 20%)
+        raw = float(s.values[0])
+        if raw > 1.0:
+            loser_upset_val = raw / 100.0
+        else:
+            loser_upset_val = raw
+        # Clamp to [0,1]
+        loser_upset_val = max(0.0, min(1.0, loser_upset_val))
 
 # Build an ensemble probability for each team by averaging available model
 # predicted probabilities for the "winning" class (class 1). Fall back
 # gracefully if some models are not present.
 probs_team1 = []
 probs_team2 = []
-try:
-    probs_team1.append(float(log_reg.predict_proba(team1_scaled)[0][1]))
-    probs_team2.append(float(log_reg.predict_proba(team2_scaled)[0][1]))
-except Exception:
-    pass
-try:
-    probs_team1.append(float(model.predict(team1_scaled, verbose=0)[0][0]))
-    probs_team2.append(float(model.predict(team2_scaled, verbose=0)[0][0]))
-except Exception:
-    pass
-if XGBClassifier is not None and 'xgb_clf' in globals() and xgb_clf is not None:
-    try:
-        probs_team1.append(float(xgb_clf.predict_proba(team1_scaled)[0][1]))
-        probs_team2.append(float(xgb_clf.predict_proba(team2_scaled)[0][1]))
-    except Exception:
-        pass
-if 'dt_clf' in globals() and dt_clf is not None:
-    try:
-        probs_team1.append(float(dt_clf.predict_proba(team1_scaled)[0][1]))
-        probs_team2.append(float(dt_clf.predict_proba(team2_scaled)[0][1]))
-    except Exception:
-        pass
-if 'rf_clf' in globals() and rf_clf is not None:
-    try:
-        probs_team1.append(float(rf_clf.predict_proba(team1_scaled)[0][1]))
-        probs_team2.append(float(rf_clf.predict_proba(team2_scaled)[0][1]))
-    except Exception:
-        pass
+if log_reg_p1 is not None and log_reg_p2 is not None:
+    probs_team1.append(log_reg_p1)
+    probs_team2.append(log_reg_p2)
+if nn_p1 is not None and nn_p2 is not None:
+    probs_team1.append(nn_p1)
+    probs_team2.append(nn_p2)
+if XGBClassifier is not None and xgb_p1 is not None and xgb_p2 is not None:
+    probs_team1.append(xgb_p1)
+    probs_team2.append(xgb_p2)
+if 'dt_clf' in globals() and dt_p1 is not None and dt_p2 is not None:
+    probs_team1.append(dt_p1)
+    probs_team2.append(dt_p2)
+if 'rf_clf' in globals() and rf_p1 is not None and rf_p2 is not None:
+    probs_team1.append(rf_p1)
+    probs_team2.append(rf_p2)
 
 ensemble_p1 = float(sum(probs_team1) / len(probs_team1)) if len(probs_team1) > 0 else None
 ensemble_p2 = float(sum(probs_team2) / len(probs_team2)) if len(probs_team2) > 0 else None
 
-# Determine underdog (the team with the lower ensemble probability). If
-# ensemble probabilities are unavailable, we'll fall back to Upset_Factor.
+# Determine underdog using an odds-based head-to-head conversion.
+# Convert per-team ensemble probs to odds and compute a head-to-head
+# base probability so the two probabilities form a proper pairwise
+# distribution. This avoids treating both high ensemble probs as
+# independent head-to-head chances.
 underdog = None
 underdog_prob = None
 favorite_prob = None
+hh_p1 = hh_p2 = None
 if ensemble_p1 is not None and ensemble_p2 is not None:
-    if ensemble_p1 < ensemble_p2:
-        underdog = team1
-        underdog_prob = ensemble_p1
-        favorite_prob = ensemble_p2
-    else:
-        underdog = team2
-        underdog_prob = ensemble_p2
-        favorite_prob = ensemble_p1
+    try:
+        def safe_odds(p):
+            p = max(1e-6, min(1.0 - 1e-6, float(p)))
+            return p / (1.0 - p)
+        o1 = safe_odds(ensemble_p1)
+        o2 = safe_odds(ensemble_p2)
+        hh_p1 = o1 / (o1 + o2)
+        hh_p2 = 1.0 - hh_p1
+        # underdog is the team with the smaller head-to-head probability
+        if hh_p1 < hh_p2:
+            underdog = team1
+            underdog_prob = hh_p1
+            favorite_prob = hh_p2
+        else:
+            underdog = team2
+            underdog_prob = hh_p2
+            favorite_prob = hh_p1
+    except Exception:
+        # fallback to the simpler approach if something goes wrong
+        if ensemble_p1 < ensemble_p2:
+            underdog = team1
+            underdog_prob = ensemble_p1
+            favorite_prob = ensemble_p2
+        else:
+            underdog = team2
+            underdog_prob = ensemble_p2
+            favorite_prob = ensemble_p1
 
 # Get the losing team's win ratio from training records (Wins / (Wins+Losses))
 win_ratio = None
@@ -892,6 +1012,9 @@ if loser_upset_val is not None:
         # Combine signals: higher upset_factor, lower win_ratio, and
         # tighter matchup all increase upset likelihood.
         modifier = (alpha * loser_upset_val) + (beta * inv_win) + (gamma * (1.0 - strength_gap))
+        # Optional scale to increase upset sensitivity (tunable)
+        upset_scale = 1.5
+        modifier *= upset_scale
         # Scale base underdog probability by the combined modifier
         adjusted_upset = underdog_prob * modifier
     else:
@@ -903,19 +1026,36 @@ if loser_upset_val is not None:
 if adjusted_upset is not None:
     # Clamp to [0,1]
     adjusted_upset = max(0.0, min(1.0, float(adjusted_upset)))
+    # Cap upset probability at a conservative upper bound so "upset"
+    # remains the less-likely outcome when the ensemble favors the winner.
+    max_upset_cap = 0.60
+    capped_upset = min(adjusted_upset, max_upset_cap)
 
-    # Print header label using the requested wording
+    # Print header label using the requested wording and show component breakdown
     label = 'Chances of the Losing Team to Upset the Winning Team:'
+    upset_display = capped_upset * 100.0
     if final_winner == team1:
-        # team1 wins; show upset % under team2 column
-        print(f"{label: <25} {'':<30} {adjusted_upset*100:.1f}%")
+        print(f"{label: <25} {'':<30} {upset_display:.1f}%")
     else:
-        print(f"{label: <25} {adjusted_upset*100:.1f}%")
-    # Also provide supporting numbers when available for transparency
-    if ensemble_p1 is not None and ensemble_p2 is not None:
-        print(f"{'': <25} Ensemble probs -> {team1}: {ensemble_p1*100:.1f}%, {team2}: {ensemble_p2*100:.1f}%")
+        print(f"{label: <25} {upset_display:.1f}%")
+
+    # Provide supporting numbers for transparency
+        if ensemble_p1 is not None and ensemble_p2 is not None:
+            print(f"{'': <25} Ensemble probs -> {team1}: {ensemble_p1*100:.1f}%, {team2}: {ensemble_p2*100:.1f}%")
+            if hh_p1 is not None and hh_p2 is not None:
+                print(f"{'': <25} Head-to-head base -> {team1}: {hh_p1*100:.1f}%, {team2}: {hh_p2*100:.1f}%")
     if loser_upset_val is not None:
-        print(f"{'': <25} Upset_Factor (dataset): {loser_upset_val:.2f}")
+        print(f"{'': <25} Normalized Upset_Factor (dataset): {loser_upset_val:.2f}  (values >1 are treated as percentages and divided by 100)")
+    # Show upset scale if available
+    try:
+        print(f"{'': <25} Upset scale applied: x{upset_scale:.2f}")
+    except Exception:
+        pass
     if win_ratio is not None:
         print(f"{'': <25} Losing team win ratio: {win_ratio*100:.1f}%")
+    # Show the intermediate signals used in the modifier when available
+    try:
+        print(f"{'': <25} Modifier components -> alpha*Upset: {alpha*loser_upset_val:.3f}, beta*(1-win): {beta*inv_win:.3f}, gamma*(1-gap): {gamma*(1.0-strength_gap):.3f}")
+    except Exception:
+        pass
     print("-" * 85)
