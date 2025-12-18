@@ -55,6 +55,12 @@ except Exception:
 # to training only Logistic Regression and the Neural Network.
 
 # Command-line arguments
+# The script supports three modes of operation:
+# 1. Interactive (default): prompts user for two team names and displays matchup.
+# 2. Non-interactive (--no-interactive): trains models, validates on test data,
+#    then exits without requesting user input. Useful for automated pipelines.
+# 3. Non-interactive with teams (--team1 + --team2): runs training and validation,
+#    then immediately predicts the specified matchup without user interaction.
 parser = argparse.ArgumentParser(description='NFL win-prediction script')
 parser.add_argument('--no-interactive', action='store_true', help='Skip the two-team interactive matchup prompt')
 parser.add_argument('--team1', type=str, help='First team name for non-interactive matchup')
@@ -455,7 +461,11 @@ try:
         # Compute actual label
         test_df['actual'] = (test_df['Wins'] > test_df['Losses']).astype(int)
 
-        # Compare predictions to actuals and report accuracy / confusion matrices
+        # Compare predictions to actuals and report accuracy / confusion matrices.
+        # This validation step shows how well each model performs on the test data
+        # when ground-truth outcomes are known. Accuracy gives a simple percentage;
+        # confusion matrices show false positives / false negatives, revealing if
+        # a model is systematically biased toward predicting wins or losses.
         from sklearn.metrics import accuracy_score
         log_acc = accuracy_score(test_df['actual'], test_df['pred_log'])
         nn_acc = accuracy_score(test_df['actual'], test_df['pred_nn'])
@@ -508,16 +518,26 @@ try:
             out += f" {upset_pct:<10}"
             print(out)
         print("-" * (100 if XGBClassifier is None else 140))
+        # Display accuracy scores for each model on the test data.
+        # Accuracy = (correct_predictions / total_predictions).
+        # For a balanced binary classification, 0.50 is random guessing; higher is better.
         print(f"Logistic Regression accuracy on test games: {log_acc:.4f}")
         print(f"Neural Network accuracy on test games:      {nn_acc:.4f}")
         if XGBClassifier is not None:
             print(f"XGBoost accuracy on test games:             {xgb_acc:.4f}")
+        # Confusion matrices show the breakdown of predictions:
+        # [[true_negatives, false_positives], [false_negatives, true_positives]]
+        # Off-diagonal entries reveal where models go wrong.
         print("\nLogReg confusion matrix:\n", cm_log_test)
         print("\nNN confusion matrix:\n", cm_nn_test)
         if XGBClassifier is not None:
             print("\nXGBoost confusion matrix:\n", cm_xgb_test)
 
-        # Print mismatches: find rows where ANY model prediction differs from actual
+        # Print mismatches: identify rows where ANY model prediction differs from actual outcome.
+        # Strategy: build a boolean mask by comparing each prediction column (pred_log, pred_nn,
+        # pred_xgb, pred_dt, pred_rf) to the 'actual' column row-wise. If any prediction
+        # differs from actual in that row, mark as a mismatch. This shows where the ensemble
+        # of models failed and deserves investigation.
         cols_to_check = ['pred_log','pred_nn']
         if 'pred_xgb' in test_df.columns:
             cols_to_check.append('pred_xgb')
@@ -525,12 +545,14 @@ try:
             cols_to_check.append('pred_dt')
         if 'pred_rf' in test_df.columns:
             cols_to_check.append('pred_rf')
-        # Compare each prediction column to the 'actual' Series row-wise
+        # Row-wise comparison: test_df[cols_to_check].ne(..., axis=0) compares each row
+        # element-wise; .any(axis=1) marks a row if any column differs from actual.
         mismatch_mask = test_df[cols_to_check].ne(test_df['actual'], axis=0).any(axis=1)
         mismatches = test_df.loc[mismatch_mask, ['Team','Wins','Losses','actual'] + cols_to_check]
         if not mismatches.empty:
             print('\nMismatches (teams where any model disagreed with actual outcome):')
             for _, r in mismatches.iterrows():
+                # Build readable summary: show actual outcome and all model predictions
                 parts = [f"{r['Team']}: actual={'WIN' if r['actual']==1 else 'LOSS'}"]
                 parts.append(f"LogReg={'WIN' if r['pred_log']==1 else 'LOSS'}")
                 parts.append(f"NN={'WIN' if r['pred_nn']==1 else 'LOSS'}")
@@ -574,14 +596,21 @@ if args.team1 and args.team2:
     team1 = args.team1
     team2 = args.team2
 
-    # map partial names to full available team names if needed
+    # Team-name resolution: handle partial matches and case insensitivity
+    # Strategy:
+    # 1. Try exact match (case-insensitive) for direct hits.
+    # 2. Fall back to substring match if exactly one team contains the input.
+    # 3. Return None if no match or multiple ambiguous matches.
+    # This allows users to supply short names like 'Eagles', 'Chiefs' or
+    # partial names like 'New' or 'Tampa' while still catching typos.
     available_teams = df['Team'].unique()
-    # try exact map first, otherwise do partial match
     def resolve_team(name):
         name = name.strip()
+        # Exact match (case-insensitive)
         for t in available_teams:
             if name.lower() == t.lower():
                 return t
+        # Substring match (case-insensitive); only accept if unambiguous
         matches = [t for t in available_teams if name.lower() in t.lower()]
         return matches[0] if len(matches) == 1 else None
 
@@ -607,30 +636,39 @@ for i, team in enumerate(sorted(available_teams), 1):
 # were provided earlier (args.team1 && args.team2) we've already resolved
 # them and can skip this prompt.
 if not (args.team1 and args.team2):
-    # Get user input for two teams
+    # Interactive team selection with validation loop.
+    # Continues until the user provides two different, unambiguous team names.
+    # The loop offers helpful error messages for common issues:
+    # - No match found (typo or incorrect abbreviation).
+    # - Multiple matches (ambiguous input; user must be more specific).
+    # - Same team selected twice (nonsensical matchup).
+    # - Keyboard interrupt (user can Ctrl+C to exit gracefully).
     while True:
         try:
             team1_input = input("\nEnter first team name (or part of it): ").strip()
             team2_input = input("Enter second team name (or part of it): ").strip()
             
-            # Find matching teams (case-insensitive, partial match)
+            # Find matching teams (case-insensitive substring match)
             team1_matches = [t for t in available_teams if team1_input.lower() in t.lower()]
             team2_matches = [t for t in available_teams if team2_input.lower() in t.lower()]
             
+            # Validate team1 match
             if not team1_matches:
                 print(f"No team found matching '{team1_input}'. Please try again.")
                 continue
-            if not team2_matches:
-                print(f"No team found matching '{team2_input}'. Please try again.")
-                continue
-            
             if len(team1_matches) > 1:
                 print(f"Multiple matches for '{team1_input}': {', '.join(team1_matches)}")
+                continue
+            
+            # Validate team2 match
+            if not team2_matches:
+                print(f"No team found matching '{team2_input}'. Please try again.")
                 continue
             if len(team2_matches) > 1:
                 print(f"Multiple matches for '{team2_input}': {', '.join(team2_matches)}")
                 continue
             
+            # Extract unique matches and validate they differ
             team1 = team1_matches[0]
             team2 = team2_matches[0]
             
@@ -638,6 +676,7 @@ if not (args.team1 and args.team2):
                 print("Please enter two different teams.")
                 continue
             
+            # Valid pair: exit the loop and proceed to predictions
             break
         
         except KeyboardInterrupt:
@@ -822,25 +861,42 @@ if not wr.empty:
         win_ratio = None
 
 # Compute an adjusted upset probability combining multiple signals:
-# - ensemble underdog probability (how the models view the underdog)
-# - Upset_Factor (domain volatility; higher means upsets more likely)
-# - inverse win ratio (teams with lower win ratios are more likely to be upset)
-# - strength gap (difference between favorite and underdog probabilities)
-# Weights chosen conservatively; clamp final value to [0,1].
+#
+# The adjusted upset probability blends:
+# 1. Underdog ensemble probability (how likely models think underdog wins)
+# 2. Upset_Factor (domain knowledge: historical volatility for this team)
+# 3. Inverse win ratio (teams with poor records are less likely to upset)
+# 4. Strength gap (how close the matchup is; closer = higher upset chance)
+#
+# Weighting rationale:
+# - Upset_Factor is weighted highest (alpha=0.6) because it is domain-derived
+#   and captures long-term team tendencies and volatility.
+# - Inverse win ratio (beta=0.3) adds an empirical component: teams with poor
+#   records have been losing consistently and are unlikely to suddenly win.
+# - Strength gap (gamma=0.1) is low weight because we're already accounting
+#   for strength via ensemble probability.
+#
+# Formula: adjusted_upset = underdog_prob * modifier, where
+#   modifier = (0.6 * upset_factor + 0.3 * (1-win_ratio) + 0.1 * (1-gap))
+# This scales the underdog's base probability by a domain-aware factor.
+# Final result is clamped to [0, 1] to stay within valid probability range.
 adjusted_upset = None
 if loser_upset_val is not None:
     if underdog_prob is not None and favorite_prob is not None:
+        # Normalize strength gap to [0, 1]: gap = 0 means equally strong teams.
         strength_gap = max(0.0, min(1.0, abs(favorite_prob - underdog_prob)))
-        alpha = 0.6  # weight for Upset_Factor
-        beta = 0.3   # weight for inverse win ratio
+        alpha = 0.6  # weight for Upset_Factor (domain volatility)
+        beta = 0.3   # weight for inverse win ratio (empirical performance)
         gamma = 0.1  # weight for closeness (1 - strength_gap)
         inv_win = (1.0 - win_ratio) if win_ratio is not None else 0.5
+        # Combine signals: higher upset_factor, lower win_ratio, and
+        # tighter matchup all increase upset likelihood.
         modifier = (alpha * loser_upset_val) + (beta * inv_win) + (gamma * (1.0 - strength_gap))
-        # scale base underdog probability by the combined modifier
+        # Scale base underdog probability by the combined modifier
         adjusted_upset = underdog_prob * modifier
     else:
-        # If ensemble probs aren't available, make a conservative estimate
-        # based mostly on the Upset_Factor and win ratio.
+        # If ensemble probs aren't available, fall back to a conservative
+        # estimate using only Upset_Factor and win ratio (no model confidence).
         inv_win = (1.0 - win_ratio) if win_ratio is not None else 0.5
         adjusted_upset = 0.35 * loser_upset_val + 0.15 * inv_win
 
