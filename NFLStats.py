@@ -880,7 +880,7 @@ if 'rf_clf' in globals() and rf_p1 is not None and rf_p2 is not None:
 final_winner = team1 if votes_team1 >= votes_team2 else team2
 
 if log_reg_winner == nn_winner:
-    print(f"\nBoth models agree: {log_reg_winner} wins this matchup!")
+    print(f"\nAll models agree: {log_reg_winner} wins this matchup!")
 else:
     if XGBClassifier is not None:
         consensus = team1 if votes_team1 > votes_team2 else team2
