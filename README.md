@@ -186,7 +186,7 @@ model = keras.models.load_model("model.keras")
 *(Write here)*  
 
 **Unexpected results:**  
-*(Write here)*  
+
 
 **What you would improve with more time:**  
-*(Write here)*  
+Probably try to make it more consistent with its results, maybe try to find bette data (advanced data, etc) to use, 
