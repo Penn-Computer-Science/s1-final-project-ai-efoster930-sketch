@@ -183,7 +183,7 @@ model = keras.models.load_model("model.keras")
 *(Write here)*  
 
 **Dataset limitations or biases:**  
-*(Write here)*  
+
 
 **Unexpected results:**  
 When I run the program with two teams sometimes the upset factor is way less than is to be expected from that team matchup.
