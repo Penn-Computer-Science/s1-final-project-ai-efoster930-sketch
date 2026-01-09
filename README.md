@@ -186,7 +186,7 @@ model = keras.models.load_model("model.keras")
 *(Write here)*  
 
 **Unexpected results:**  
-
+When I run the program with two teams sometimes the upset factor is way less than is to be expected from that team matchup.
 
 **What you would improve with more time:**  
 Probably try to make it more consistent with its results, maybe try to find bette data (advanced data, etc) to use, 
