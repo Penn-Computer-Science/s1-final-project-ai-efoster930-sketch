@@ -1,3 +1,4 @@
+[![Review Assignment Due Date](https://classroom.github.com/assets/deadline-readme-button-22041afd0340ce965d47ae6ef1cefeee28c7c493a6346c4f15d667ab976d596c.svg)](https://classroom.github.com/a/Wuud-5WI)
 # Topics in CS - Project 5: AI (Final Project for Fall Semester)
 
 Welcome to your final project for the AI unit! This assignment serves as your final exam and challenges you to design, train, evaluate, and present an AI system of your choice.
@@ -176,16 +177,16 @@ model = keras.models.load_model("model.keras")
 ## Reflection - Complete this once you have finished!
 
 **Best performing model/run and why:**  
-*(Write here)*  
+The best performing model is the neural network because it has been the best at predicting future games so far compared to all the other models.
 
 **Most important hyperparameters and effects:**  
-*(Write here)*  
+I think the hyperparameters is the neural network because so far based off of our tests its been the most accurate.
 
 **Dataset limitations or biases:**  
-*(Write here)*  
+The AI struggles choosing between two teams and sometimes is biased based off of upsets.
 
 **Unexpected results:**  
-*(Write here)*  
+When I run the program with two teams sometimes the upset factor is way less than is to be expected from that team matchup.
 
 **What you would improve with more time:**  
-*(Write here)*  
+Probably try to make it more consistent with its results, maybe try to find bette data (advanced data, etc) to use, 

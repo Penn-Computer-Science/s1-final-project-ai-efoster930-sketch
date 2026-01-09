@@ -1,0 +1,33 @@
+Team,Offset,GivenInterception,GivenFumble,TotalGiven,TakenInterception,TakenFumble,TotalTaken
+Buffalo Bills,24,16,16,32,6,2,8
+Pittsburgh Steelers,16,17,16,33,6,11,17
+Green Bay Packers,12,17,14,31,11,8,19
+Minnesota Vikings,12,24,9,33,12,9,21
+Los Angeles Chargers,12,15,6,21,3,6,9
+Philadelphia Eagles,11,13,13,26,6,9,15
+Houston Texans,10,19,10,29,12,7,19
+Detroit Lions,9,16,8,24,12,3,15
+Chicago Bears,8,11,13,24,7,9,16
+Denver Broncos,6,15,10,25,12,7,19
+Kansas City Chiefs,6,13,7,20,11,3,14
+Los Angeles Rams,6,13,7,20,9,5,14
+Baltimore Ravens,6,12,5,17,4,7,11
+Cincinnati Bengals,3,15,10,25,9,13,22
+Washington Commanders,1,7,10,17,9,7,16
+New Orleans Saints,-2,14,3,17,12,7,19
+New York Jets,-2,7,10,17,11,8,19
+Arizona Cardinals,-3,9,8,17,11,9,20
+Indianapolis Colts,-4,16,9,25,19,10,29
+Miami Dolphins,-5,10,6,16,10,11,21
+Tampa Bay Buccaneers,-5,7,11,18,16,7,23
+Carolina Panthers,-5,9,8,17,15,7,22
+Atlanta Falcons,-6,12,6,18,19,5,24
+Dallas Cowboys,-6,13,9,22,14,14,28
+Seattle Seahawks,-6,13,5,18,16,8,24
+New York Giants,-8,5,10,15,13,10,23
+San Francisco 49ers,-10,11,6,17,16,11,27
+New England Patriots,-11,7,5,12,11,12,23
+Jacksonville Jaguars,-15,6,3,9,15,9,24
+Tennessee Titans,-16,11,7,18,21,13,34
+Las Vegas Raiders,-16,10,3,13,16,13,29
+Cleveland Browns,-22,4,8,12,23,11,34
