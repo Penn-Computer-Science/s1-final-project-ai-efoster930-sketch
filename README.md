@@ -177,13 +177,13 @@ model = keras.models.load_model("model.keras")
 ## Reflection - Complete this once you have finished!
 
 **Best performing model/run and why:**  
-*(Write here)*  
+The best performing model is the neural network because it has been the best at predicting future games so far compared to all the other models.
 
 **Most important hyperparameters and effects:**  
-*(Write here)*  
+I think the hyperparameters is the neural network because so far based off of our tests its been the most accurate.
 
 **Dataset limitations or biases:**  
-
+The AI struggles choosing between two teams and sometimes is biased based off of upsets.
 
 **Unexpected results:**  
 When I run the program with two teams sometimes the upset factor is way less than is to be expected from that team matchup.
